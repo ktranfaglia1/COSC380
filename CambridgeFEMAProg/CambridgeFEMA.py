@@ -4,7 +4,7 @@
 #  Description: This program uses PyQt6 and *** packages to build a flood analysis tool for the City of Cambridge
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton,
-    QStackedWidget, QListWidget, QHBoxLayout, QLabel, QSlider
+    QStackedWidget, QListWidget, QHBoxLayout, QLabel, QSlider, QSizePolicy
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
@@ -30,8 +30,9 @@ class WaterLevelSimulator(QWidget):
         self.map_label = QLabel()
         pixmap = QPixmap("Cambridge_map.png")
         self.map_label.setPixmap(pixmap)
-        self.map_label.setScaledContents(False)   # Prevent automatic scaling
-        self.map_label.adjustSize()               # Ensure the label fits the pixmap
+        self.map_label.setScaledContents(True)
+        self.map_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.map_label.setMinimumSize(600, 400)
         self.layout.addWidget(self.map_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         # Flood Overlay (Transparent Blue)
