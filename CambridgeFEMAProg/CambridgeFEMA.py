@@ -1,7 +1,7 @@
 #  Author: Kyle Tranfaglia
 #  Title: Main Program for City of Cambridge Flood Analysis Tool
-#  Last updated: 02/28/25
-#  Description: This program uses PyQt6 and *** packages to build a flood analysis tool for the City of Cambridge
+#  Last updated: 03/07/25
+#  Description: This program is a flood analysis tool for the City of Cambridge
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton,
     QStackedWidget, QListWidget, QHBoxLayout, QLabel, QSlider, QSizePolicy,
@@ -13,6 +13,130 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 import random
 import sys
 import folium
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from mpl_toolkits.mplot3d import Axes3D
+from rasterio.mask import mask
+import rasterio
+from rasterio.warp import transform_bounds
+from shapely.geometry import box
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+
+class Topographic(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        # Layout setup
+        self.layout = QVBoxLayout()
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self.setLayout(self.layout)
+
+        # Title Label
+        self.title = QLabel("Topographic Elevation Model of Cambridge")
+        self.title.setStyleSheet("font-size: 42px; font-family: 'Roboto'; border: 2px solid black; "
+                                 "border-radius: 8px; background-color: #444444; padding: 10px;")
+        self.layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # Matplotlib Figure
+        self.figure = plt.figure(figsize=(16, 10))
+        self.canvas = FigureCanvas(self.figure)
+        self.layout.addWidget(self.canvas)
+
+        # Load and plot DEM
+        self.current_elevation = None
+        self.load_and_plot_dem()
+
+        # Button Layout (Side-by-Side)
+        button_layout = QHBoxLayout()
+
+        # Refresh Button
+        self.refresh_button = QPushButton("Refresh Topographic Model")
+        self.refresh_button.setStyleSheet("font-size: 20px; padding: 8px;")
+        self.refresh_button.clicked.connect(self.load_and_plot_dem)
+        button_layout.addWidget(self.refresh_button)
+
+        # Save Button (Export PNG)
+        self.save_button = QPushButton("Save Model as PNG")
+        self.save_button.setStyleSheet("font-size: 20px; padding: 8px;")
+        self.save_button.clicked.connect(self.save_3d_model)
+        button_layout.addWidget(self.save_button)
+
+        # Add button layout to main layout
+        self.layout.addLayout(button_layout)
+
+    def load_and_plot_dem(self):
+        dem_path = "../Data/Dorchester_DEM/dorc2015_m/"  # Use the correct folder
+
+        try:
+            with rasterio.open(dem_path) as dataset:
+                # Step 1: Convert Cambridge BBox to DEM CRS
+                cambridge_bbox = [-76.13, 38.53, -76.04, 38.61]  # Lat/Lon format
+                minx, miny, maxx, maxy = transform_bounds("EPSG:4326", dataset.crs, *cambridge_bbox)
+                geom = [box(minx, miny, maxx, maxy)]  # Create bounding box in correct CRS
+
+                # Step 2: Crop the DEM dataset
+                out_image, out_transform = mask(dataset, geom, crop=True)
+                elevation = out_image[0]  # Extract elevation array
+
+                # Step 3: Downsample if needed (for speed)
+                # elevation = elevation[::5, ::5]  # Reduce resolution for faster plotting
+
+                # Step 4: Plot 3D Terrain
+                self.plot_3d_terrain(elevation)
+
+        except Exception as e:
+            print("Error loading DEM data:", e)
+
+    def plot_3d_terrain(self, elevation):
+        """ Generate an interactive 3D elevation plot using Matplotlib """
+        self.figure.clear()  # Clear previous plot
+        ax = self.figure.add_subplot(111, projection='3d')
+
+        # Create X, Y coordinates
+        height, width = elevation.shape
+        x = np.linspace(0, width, width)
+        y = np.linspace(0, height, height)
+        X, Y = np.meshgrid(x, y)
+
+        # Plot terrain with interactive rotation
+        surface = ax.plot_surface(X, Y, elevation, cmap="terrain", edgecolor='none')
+
+        # Labels & Title
+        ax.set_xlabel("X (Longitude Approx.)")
+        ax.set_ylabel("Y (Latitude Approx.)")
+        ax.set_zlabel("Elevation (feet)")
+        ax.set_title("Cambridge, MD - 3D Elevation Model")
+
+        # **Enable interactive controls**
+        ax.view_init(elev=45, azim=135)  # Default view
+        ax.mouse_init()  # Allow interactive rotation with mouse
+
+        # **Add a color legend**
+        cbar = self.figure.colorbar(surface, shrink=0.7, aspect=20, pad=0.1)
+        cbar.set_label("Elevation (feet)", fontsize=12)
+
+        self.canvas.draw()
+
+    def save_3d_model(self):
+        """ Save the current 3D model as a PNG image """
+        # Get user's home directory
+        home_dir = os.path.expanduser("~")
+
+        # Find the Downloads folder (works on Windows, macOS, and Linux)
+        downloads_dir = os.path.join(home_dir, "Downloads")
+
+        # Ensure the Downloads folder exists
+        if not os.path.exists(downloads_dir):
+            os.makedirs(downloads_dir)
+
+        # Define the output file path
+        file_path = os.path.join(downloads_dir, "Cambridge_3D_Model.png")
+
+        # Save the figure
+        self.figure.savefig(file_path, dpi=300)
+        print(f"Topographic Model saved as {file_path}")
 
 
 class InteractiveMap(QWidget):
@@ -43,7 +167,7 @@ class InteractiveMap(QWidget):
     def create_map(self):
         # Create a Folium map centered on Cambridge, MD.
         map_center = [38.572, -76.078]
-        m = folium.Map(location=map_center, zoom_start=15,)
+        m = folium.Map(location=map_center, zoom_start=15, )
         # Optionally add a marker at the center for reference.
         folium.Marker(map_center, popup="Cambridge, MD").add_to(m)
 
@@ -83,6 +207,28 @@ class InteractiveMap(QWidget):
                 fill_opacity=0.6,
                 popup=popup_text
             ).add_to(m)
+
+        # **Add a legend using HTML and CSS**
+        legend_html = """
+                            <div style="
+                                position: fixed; 
+                                bottom: 20px; right: 20px; 
+                                background-color: white; 
+                                padding: 10px; 
+                                border: 2px solid black; 
+                                border-radius: 5px;
+                                font-size: 16px;
+                                z-index: 1000;
+                            ">
+                                <b>Flood Risk Legend</b><br>
+                                <span style="display:inline-block; width: 15px; height: 15px; background-color: red;"></span> High Risk<br>
+                                <span style="display:inline-block; width: 15px; height: 15px; background-color: orange;"></span> Moderate Risk<br>
+                                <span style="display:inline-block; width: 15px; height: 15px; background-color: yellow;"></span> Low Risk
+                            </div>
+                            """
+
+        # Add the legend as a child of the map
+        m.get_root().html.add_child(folium.Element(legend_html))
 
         # Render the map to HTML and load it into the QWebEngineView
         html_data = m.get_root().render()
@@ -131,6 +277,8 @@ class StreetView(QWidget):
         self.slider.setRange(0, 100)
         self.slider.setValue(0)
         self.slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.slider.valueChanged.connect(self.update_year_label)
+
         controls_layout.addWidget(self.slider)
 
         # Hurricane Category (label and combo box grouped)
@@ -165,6 +313,8 @@ class StreetView(QWidget):
 
     def init_map(self):
         # Create a locked Folium map centered on Cambridge, MD
+
+        # Create a Folium map centered on Cambridge, MD
         m = folium.Map(location=self.map_center,
                        zoom_start=15,
                        min_zoom=15,
@@ -172,21 +322,25 @@ class StreetView(QWidget):
                        zoom_control=False,
                        dragging=False,
                        control_scale=True)
+
+        # Add a reference marker at the center
         folium.Marker([38.572, -76.078], popup="Cambridge, MD").add_to(m)
+
+        # Render the map in the QWebEngineView
         html_data = m.get_root().render()
         self.web_view.setHtml(html_data, baseUrl=QUrl("http://localhost/"))
 
-    def simulate(self):
-        # Get simulation parameters
-        slider_value = self.slider.value()
-        year = slider_value + 2025
+    def update_year_label(self):
+        year = self.slider.value() + 2025
         self.year_label.setText(f"Year: {year}")
+
+    def simulate(self):
         category_text = self.category_combo.currentText().strip()
         try:
             category = int(category_text.split()[1])
         except Exception:
             category = 1
-        water_factor = slider_value / 100.0
+        water_factor = self.slider.value() / 100.0
 
         # Re-create the Folium map for simulation (locked in place)
         m = folium.Map(location=self.map_center,
@@ -199,6 +353,28 @@ class StreetView(QWidget):
 
         # Add a reference marker at the center
         folium.Marker([38.572, -76.078], popup="Cambridge, MD").add_to(m)
+
+        # **Add a legend using HTML and CSS**
+        legend_html = """
+                    <div style="
+                        position: fixed; 
+                        bottom: 20px; right: 20px; 
+                        background-color: white; 
+                        padding: 10px; 
+                        border: 2px solid black; 
+                        border-radius: 5px;
+                        font-size: 16px;
+                        z-index: 1000;
+                    ">
+                        <b>Flood Estimate Legend</b><br>
+                        <span style="display:inline-block; width: 15px; height: 15px; background-color: red;"></span> Severe Flooding<br>
+                        <span style="display:inline-block; width: 15px; height: 15px; background-color: orange;"></span> Moderate Flooding<br>
+                        <span style="display:inline-block; width: 15px; height: 15px; background-color: yellow;"></span> Minor Flooding
+                    </div>
+                    """
+
+        # Add the legend as a child of the map
+        m.get_root().html.add_child(folium.Element(legend_html))
 
         # Define a bounding box around the center for placing flood markers
         lat_min = self.map_center[0] - 0.012
@@ -227,10 +403,10 @@ class StreetView(QWidget):
             f = (6 - category) / 5.0
             for i in range(num_circles):
                 t = i / (num_circles - 1) if num_circles > 1 else 0
-                effective_t = min(t * (f + 0.3), 1.0)
+                effective_t = min(t * (f + 0.25), 1.0)
 
                 # Increase radius per ring (each ring 30% larger)
-                radius = base_radius * (1 + 0.3 * i)
+                radius = base_radius * (1 + 0.25 * i)
 
                 # Interpolate opacity: use a base that decreases with category.
                 base_opacity = 0.7 - (category - 1) * 0.1
@@ -254,7 +430,6 @@ class StreetView(QWidget):
         # Render the map to an HTML string and load it in the web view
         html_data = m.get_root().render()
         self.web_view.setHtml(html_data, baseUrl=QUrl("http://localhost/"))
-        print(f"Simulate pressed: {category_text}, Year: {year}")
 
 
 # Main application window with sidebar navigation and multiple pages
@@ -289,10 +464,10 @@ class MainApp(QMainWindow):
         settings_item = QTreeWidgetItem(["Settings"])
         flood_item = QTreeWidgetItem(["Flood Simulators"])
         street_view_item = QTreeWidgetItem(["-- Street View"])
-        model_3d_item = QTreeWidgetItem(["-- 3D Model"])
+        model_topographic_item = QTreeWidgetItem(["-- Topographic"])
         interactive_map_item = QTreeWidgetItem(["-- Interactive Map"])
         # Add subcategories under Flood Simulators
-        flood_item.addChildren([street_view_item, model_3d_item, interactive_map_item])
+        flood_item.addChildren([street_view_item, model_topographic_item, interactive_map_item])
         insurance_item = QTreeWidgetItem(["Insurance Projections"])
         damage_item = QTreeWidgetItem(["Damage Estimator"])
 
@@ -338,7 +513,7 @@ class MainApp(QMainWindow):
                                  "border-radius: 8px; background-color: #444444; padding: 10px;")
         home_layout.addWidget(home_label, alignment=Qt.AlignmentFlag.AlignHCenter)
         image_label = QLabel()
-        pixmap = QPixmap("Cambridge_logo.png")  # Adjust path as needed
+        pixmap = QPixmap("Cambridge_logo.png")
         image_label.setPixmap(pixmap)
         image_label.setScaledContents(True)
         home_layout.addWidget(image_label, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -349,7 +524,7 @@ class MainApp(QMainWindow):
             "Home": home_page,
             "Settings": QWidget(),
             "-- Street View": StreetView(),
-            "-- Topographic": QWidget(),
+            "-- Topographic": Topographic(),
             "-- Interactive Map": InteractiveMap(),
             "Insurance Projections": QWidget(),
             "Damage Estimator": QWidget()
