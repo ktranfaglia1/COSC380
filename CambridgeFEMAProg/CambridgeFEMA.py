@@ -10,21 +10,21 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QPixmap, QCursor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+import matplotlib.pyplot as plt
 import random
 import sys
+import os
 import folium
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from mpl_toolkits.mplot3d import Axes3D
-from rasterio.mask import mask
 import rasterio
+from rasterio.mask import mask
 from rasterio.warp import transform_bounds
 from shapely.geometry import box
 import numpy as np
-import matplotlib.pyplot as plt
-import os
 
 
-class Topographic(QWidget):
+# 3D elevation flood level simulator class
+class Elevation(QWidget):
     def __init__(self):
         super().__init__()
 
@@ -34,7 +34,7 @@ class Topographic(QWidget):
         self.setLayout(self.layout)
 
         # Title Label
-        self.title = QLabel("Topographic Elevation Model of Cambridge")
+        self.title = QLabel("3D Elevation Flood Simulation Model")
         self.title.setStyleSheet("font-size: 42px; font-family: 'Roboto'; border: 2px solid black; "
                                  "border-radius: 8px; background-color: #444444; padding: 10px;")
         self.layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -44,87 +44,245 @@ class Topographic(QWidget):
         self.canvas = FigureCanvas(self.figure)
         self.layout.addWidget(self.canvas)
 
-        # Load and plot DEM
+        # Load initial DEM data
         self.current_elevation = None
-        self.load_and_plot_dem()
+        self.base_elevation = None
+        self.load_dem_data()
 
-        # Button Layout (Side-by-Side)
+        # Controls Layout
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(15)
+
+        # Year label and slider
+        self.year_label = QLabel("Year: 2025")
+        self.year_label.setStyleSheet("font-size: 20px;")
+        controls_layout.addWidget(self.year_label)
+
+        # Slider (water level factor)
+        self.year_slider = QSlider(Qt.Orientation.Horizontal)
+        self.year_slider.setRange(0, 100)
+        self.year_slider.setValue(0)
+        self.year_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.year_slider.valueChanged.connect(self.update_year_label)
+        controls_layout.addWidget(self.year_slider)
+
+        # Hurricane Category (label and combo box grouped)
+        hurricane_layout = QHBoxLayout()
+        hurricane_layout.setSpacing(5)
+        hurricane_label = QLabel("Hurricane:")
+        hurricane_label.setStyleSheet("font-size: 22px;")
+        hurricane_layout.addWidget(hurricane_label)
+
+        self.category_combo = QComboBox()
+        for i in range(1, 6):
+            self.category_combo.addItem(f"Category {i}")
+        self.category_combo.setStyleSheet("font-size: 22px;")
+        self.category_combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        hurricane_layout.addWidget(self.category_combo)
+        controls_layout.addLayout(hurricane_layout)
+
+        # Simulation Button
+        self.simulate_button = QPushButton("Simulate Flooding")
+        self.simulate_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.simulate_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.simulate_button.clicked.connect(self.simulate_flooding)
+        controls_layout.addWidget(self.simulate_button)
+
+        self.layout.addLayout(controls_layout)
+
+        # Button Layout for additional controls
         button_layout = QHBoxLayout()
 
-        # Refresh Button
-        self.refresh_button = QPushButton("Refresh Topographic Model")
-        self.refresh_button.setStyleSheet("font-size: 20px; padding: 8px;")
-        self.refresh_button.clicked.connect(self.load_and_plot_dem)
-        button_layout.addWidget(self.refresh_button)
+        # Reset Button
+        self.reset_button = QPushButton("Reset Model")
+        self.reset_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.reset_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.reset_button.clicked.connect(self.reset_model)
+        button_layout.addWidget(self.reset_button)
 
         # Save Button (Export PNG)
         self.save_button = QPushButton("Save Model as PNG")
-        self.save_button.setStyleSheet("font-size: 20px; padding: 8px;")
+        self.save_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.save_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.save_button.clicked.connect(self.save_3d_model)
         button_layout.addWidget(self.save_button)
 
         # Add button layout to main layout
         self.layout.addLayout(button_layout)
 
-    def load_and_plot_dem(self):
-        dem_path = "../Data/Dorchester_DEM/dorc2015_m/"  # Use the correct folder
+        # Initial plot
+        self.plot_3d_terrain(flood_level=None)
+
+    # Load DEM data and filter out NoData values
+    def load_dem_data(self):
+        dem_path = "../Data/Dorchester_DEM/dorc2015_m/"  # Adjust path as needed
 
         try:
             with rasterio.open(dem_path) as dataset:
-                # Step 1: Convert Cambridge BBox to DEM CRS
+                print("DEM file opened successfully.")
+
+                # Convert Cambridge BBox to DEM CRS
                 cambridge_bbox = [-76.13, 38.53, -76.04, 38.61]  # Lat/Lon format
                 minx, miny, maxx, maxy = transform_bounds("EPSG:4326", dataset.crs, *cambridge_bbox)
                 geom = [box(minx, miny, maxx, maxy)]  # Create bounding box in correct CRS
 
-                # Step 2: Crop the DEM dataset
+                # Crop the DEM dataset
                 out_image, out_transform = mask(dataset, geom, crop=True)
-                elevation = out_image[0]  # Extract elevation array
+                elevation_data = out_image[0]  # Extract elevation array
 
-                # Step 3: Downsample if needed (for speed)
-                # elevation = elevation[::5, ::5]  # Reduce resolution for faster plotting
+                # Replace NoData values
+                nodata_value = dataset.nodata  # Get the NoData value (-3.4028234663852886e+38)
+                if nodata_value is not None:
+                    elevation_data[elevation_data == nodata_value] = np.nan  # Convert to NaN
 
-                # Step 4: Plot 3D Terrain
-                self.plot_3d_terrain(elevation)
+                min_valid = np.nanmin(elevation_data)  # Smallest valid value
+                elevation_data = np.nan_to_num(elevation_data, nan=min_valid)  # Replace NaNs
+
+                self.base_elevation = elevation_data
+                self.current_elevation = np.copy(elevation_data)
+
+                print(f"Loaded DEM: min={np.nanmin(self.base_elevation)}, max={np.nanmax(self.base_elevation)}")
 
         except Exception as e:
             print("Error loading DEM data:", e)
+            self.base_elevation = None
+            self.current_elevation = None
 
-    def plot_3d_terrain(self, elevation):
-        """ Generate an interactive 3D elevation plot using Matplotlib """
+    # Update the year label as the slider changes
+    def update_year_label(self):
+        year = self.year_slider.value() + 2025
+        self.year_label.setText(f"Year: {year}")
+
+    # Generate an interactive 3D elevation plot with a color legend and info box
+    def plot_3d_terrain(self, flood_level=None):
+        if self.base_elevation is None:
+            return
+
         self.figure.clear()  # Clear previous plot
         ax = self.figure.add_subplot(111, projection='3d')
 
-        # Create X, Y coordinates
-        height, width = elevation.shape
+        # Create X, Y grid
+        height, width = self.base_elevation.shape
         x = np.linspace(0, width, width)
         y = np.linspace(0, height, height)
         X, Y = np.meshgrid(x, y)
 
-        # Plot terrain with interactive rotation
-        surface = ax.plot_surface(X, Y, elevation, cmap="terrain", edgecolor='none')
+        # Start with base elevation
+        elevation = np.copy(self.base_elevation)
 
-        # Labels & Title
+        # Define exact dataset min/max values
+        min_elev = -0.82  # Lowest elevation in dataset
+        max_elev = 11.42  # Highest elevation in dataset
+
+        # Ensure z-axis has proper range
+        z_min = min_elev
+        z_max = max_elev
+        if flood_level is not None:
+            z_max = max(z_max, flood_level)
+
+        ax.set_zlim(z_min, z_max)
+
+        # Plot terrain
+        terrain = ax.plot_surface(X, Y, elevation, cmap="terrain", edgecolor='none', alpha=0.8)
+
+        # Keep the elevation color scale legend always visible
+        cbar = self.figure.colorbar(terrain, shrink=0.7, aspect=20, pad=0.1)
+        cbar.set_label("Elevation (feet)", fontsize=12)
+
+        # If flooding, overlay a water surface
+        if flood_level is not None and flood_level > 0:
+            flood_mask = elevation < flood_level
+            water_surface = np.ones_like(elevation) * flood_level
+
+            # Masked arrays to plot only flooded areas
+            water_X = np.ma.masked_array(X, ~flood_mask)
+            water_Y = np.ma.masked_array(Y, ~flood_mask)
+            water_Z = np.ma.masked_array(water_surface, ~flood_mask)
+
+            # Plot water surface
+            water = ax.plot_surface(water_X, water_Y, water_Z, color='blue', alpha=0.5, edgecolor='none')
+
+        # Labels
         ax.set_xlabel("X (Longitude Approx.)")
         ax.set_ylabel("Y (Latitude Approx.)")
         ax.set_zlabel("Elevation (feet)")
-        ax.set_title("Cambridge, MD - 3D Elevation Model")
 
-        # **Enable interactive controls**
-        ax.view_init(elev=45, azim=135)  # Default view
-        ax.mouse_init()  # Allow interactive rotation with mouse
+        # **Keep the title intact**
+        title_text = f"Cambridge, MD - 3D Elevation Model"
+        if flood_level is not None:
+            title_text = f"Cambridge, MD - 3D Flood Simulation (Water Level: {flood_level:.2f} ft)"
+        ax.set_title(title_text, fontsize=14, fontweight='bold')
 
-        # **Add a color legend**
-        cbar = self.figure.colorbar(surface, shrink=0.7, aspect=20, pad=0.1)
-        cbar.set_label("Elevation (feet)", fontsize=12)
+        # **Place elevation info box on the left to mirror the color legend**
+        left_box = self.figure.add_axes([0.16, 0.36, 0.12, 0.16])  # Left side placement
+        left_box.axis("off")  # Hide axis
 
+        # Add text inside the left box
+        left_text = f"Elevation Range:\n{min_elev:.2f} to {max_elev:.2f} ft"
+        if flood_level is not None:
+            left_text += f"\nCurrent Water Level:\n{flood_level:.2f} ft"
+
+        left_box.text(0.5, 0.5, left_text, fontsize=10, ha='center', va='center',
+                      bbox=dict(facecolor='white', edgecolor='black', alpha=0.7))
+
+        # Keep interactive controls
+        ax.view_init(elev=30, azim=135)
+
+        # Update canvas
         self.canvas.draw()
 
+    # Apply flooding based on year slider and hurricane category
+    def simulate_flooding(self):
+        if self.base_elevation is None:
+            print("No elevation data loaded")
+            return
+
+        # Get simulation parameters
+        year_factor = self.year_slider.value() / 100.0  # 0 to 1
+
+        category_text = self.category_combo.currentText().strip()
+        try:
+            hurricane_category = int(category_text.split()[1])  # Category 1-5
+        except Exception:
+            hurricane_category = 1
+
+        # Get the elevation range of our terrain
+        min_elev = np.min(self.base_elevation)
+        max_elev = np.max(self.base_elevation)
+        terrain_range = max_elev - min_elev
+
+        # Calculate sea level rise based on year (linear model)
+        base_water_level = min_elev + (year_factor * terrain_range * 0.25)
+
+        # Hurricane intensity effect (exponential impact)
+        hurricane_multiplier = 1.0 + (hurricane_category ** 1.5) * 0.1
+
+        # Calculate flood level
+        flood_level = base_water_level * hurricane_multiplier
+
+        # Make sure flood level is at least at the minimum elevation to show some effect
+        flood_level = max(flood_level, min_elev)
+
+        # Apply the flood level to the terrain
+        self.plot_3d_terrain(flood_level=flood_level)
+
+        # Debug information
+        print(f"Simulating flooding for Year {2025 + self.year_slider.value()}, "
+              f"Hurricane {hurricane_category}, Flood Level: {flood_level:.2f} feet")
+        print(f"Terrain elevation range: {min_elev:.2f} to {max_elev:.2f} feet")
+
+    # Reset the model to base elevation without flooding
+    def reset_model(self):
+        self.year_slider.setValue(0)
+        self.category_combo.setCurrentIndex(0)
+        self.plot_3d_terrain(flood_level=None)
+
+    # Save the current 3D model as a PNG image
     def save_3d_model(self):
-        """ Save the current 3D model as a PNG image """
         # Get user's home directory
         home_dir = os.path.expanduser("~")
 
-        # Find the Downloads folder (works on Windows, macOS, and Linux)
+        # Find the Downloads folder
         downloads_dir = os.path.join(home_dir, "Downloads")
 
         # Ensure the Downloads folder exists
@@ -132,16 +290,19 @@ class Topographic(QWidget):
             os.makedirs(downloads_dir)
 
         # Define the output file path
-        file_path = os.path.join(downloads_dir, "Cambridge_3D_Model.png")
+        file_path = os.path.join(downloads_dir, "Cambridge_Flood_Model.png")
 
         # Save the figure
         self.figure.savefig(file_path, dpi=300)
-        print(f"Topographic Model saved as {file_path}")
+        print(f"Flood Model saved as {file_path}")
 
 
+# Interactive flood risk analysis map class
 class InteractiveMap(QWidget):
     def __init__(self):
         super().__init__()
+
+        # Page layout with title
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
         label = QLabel("Interactive Flood Analysis Map")
@@ -161,6 +322,7 @@ class InteractiveMap(QWidget):
         self.recenter_button.clicked.connect(self.recenter_map)
         layout.addWidget(self.recenter_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
+        # Set the layout and create the interactive map
         self.setLayout(layout)
         self.create_map()
 
@@ -464,10 +626,10 @@ class MainApp(QMainWindow):
         settings_item = QTreeWidgetItem(["Settings"])
         flood_item = QTreeWidgetItem(["Flood Simulators"])
         street_view_item = QTreeWidgetItem(["-- Street View"])
-        model_topographic_item = QTreeWidgetItem(["-- Topographic"])
+        model_elevation_item = QTreeWidgetItem(["-- 3D Elevation"])
         interactive_map_item = QTreeWidgetItem(["-- Interactive Map"])
         # Add subcategories under Flood Simulators
-        flood_item.addChildren([street_view_item, model_topographic_item, interactive_map_item])
+        flood_item.addChildren([street_view_item, model_elevation_item, interactive_map_item])
         insurance_item = QTreeWidgetItem(["Insurance Projections"])
         damage_item = QTreeWidgetItem(["Damage Estimator"])
 
@@ -524,7 +686,7 @@ class MainApp(QMainWindow):
             "Home": home_page,
             "Settings": QWidget(),
             "-- Street View": StreetView(),
-            "-- Topographic": Topographic(),
+            "-- 3D Elevation": Elevation(),
             "-- Interactive Map": InteractiveMap(),
             "Insurance Projections": QWidget(),
             "Damage Estimator": QWidget()
