@@ -1,13 +1,14 @@
 #  Author: Kyle Tranfaglia
 #  Title: Main Program for City of Cambridge Flood Analysis Tool
-#  Last updated: 03/07/25
+#  Last updated: 03/15/25
 #  Description: This program is a flood analysis tool for the City of Cambridge
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton,
-    QStackedWidget, QListWidget, QHBoxLayout, QLabel, QSlider, QSizePolicy,
-    QTreeWidget, QTreeWidgetItem, QComboBox
+    QStackedWidget, QHBoxLayout, QLabel, QSlider, QSizePolicy,
+    QTreeWidget, QTreeWidgetItem, QLineEdit, QFrame,
+    QTableWidget, QTableWidgetItem, QComboBox, QFileDialog
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QCursor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -17,10 +18,360 @@ import sys
 import os
 import folium
 import rasterio
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError, GeocoderQueryError
 from rasterio.mask import mask
 from rasterio.warp import transform_bounds
 from shapely.geometry import box
 import numpy as np
+import pandas as pd
+
+
+class AddressValidator(QThread):
+    result_signal = pyqtSignal(bool)
+
+    def __init__(self, address):
+        super().__init__()
+        self.address = address
+
+    def run(self):
+        geolocator = Nominatim(user_agent="insurance_app", timeout=5)
+        try:
+            print(f"Validating address: {self.address}")
+            location = geolocator.geocode(self.address, exactly_one=True)
+            if location:
+                print(f"Found location: {location.address}")
+                reverse_location = geolocator.reverse((location.latitude, location.longitude), exactly_one=True)
+                address_details = reverse_location.raw.get("address", {})
+                print(f"Address details: {address_details}")
+
+                # Check for Cambridge in either city or town fields
+                city = address_details.get("city", "").lower()
+                town = address_details.get("town", "").lower()
+                state = address_details.get("state", "").lower()
+
+                # The address details show 'town' instead of 'city' for Cambridge
+                if ("cambridge" in town.lower() or "cambridge" in city.lower()) and state.lower() in ["md", "maryland"]:
+                    print("Address is valid!")
+                    self.result_signal.emit(True)
+                    return
+                print("Address is not in Cambridge, MD")
+            else:
+                print("Location not found")
+            self.result_signal.emit(False)
+        except (GeocoderTimedOut, GeocoderServiceError, GeocoderQueryError) as e:
+            print(f"Geocoding error: {e}")
+            self.result_signal.emit(False)
+
+
+class InsuranceProjections(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.layout = QVBoxLayout()
+
+        # Title
+        self.title = QLabel("Home Insurance Projections")
+        self.title.setStyleSheet("font-size: 42px; font-family: 'Roboto'; border: 2px solid black; "
+                                 "border-radius: 8px; background-color: #444444; padding: 10px;")
+        self.layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # Form Layout for User Input
+        form_container = QVBoxLayout()
+        form_container.setAlignment(Qt.AlignmentFlag.AlignHCenter)  # Center align all contents
+
+        # Function to center label and input in an HBoxLayout
+        def create_centered_row(label_text, input_widget, w_width=695, l_width=125):
+            input_widget.returnPressed.connect(self.validate_and_generate_projection)
+            input_widget.setStyleSheet("font-size: 16px; padding: 8px;")
+            input_widget.setFixedWidth(w_width)
+
+            label = QLabel(label_text)
+            label.setFixedWidth(l_width)
+            label.setStyleSheet("font-size: 16px; border: 2px solid #444444; border-radius: 8px;")
+
+            row_layout = QHBoxLayout()  # Horizontal layout for centering
+            row_layout.addStretch()  # Push content to center
+            row_layout.addWidget(label)
+            row_layout.addWidget(input_widget)
+            row_layout.addStretch()  # Push content to center
+
+            return row_layout
+
+        self.address_input = QLineEdit()
+        self.value_input = QLineEdit()
+        self.year_input = QLineEdit()
+        self.address_input.setText("307 Gay St, Cambridge, MD 21613")
+        self.value_input.setText("250000")
+        self.year_input.setText("2025")
+
+        # Add centered rows to the form container
+        form_container.addLayout(create_centered_row("Address:", self.address_input))
+        form_container.addLayout(create_centered_row("Home Value ($):", self.value_input))
+        form_container.addLayout(create_centered_row("Projection Year:", self.year_input))
+
+        self.validator_thread = None
+        self.layout.addLayout(form_container)
+
+        # Submit Button
+        self.submit_button = QPushButton("Generate Projection")
+        self.submit_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.submit_button.setFixedWidth(925)
+        self.submit_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.submit_button.clicked.connect(self.validate_and_generate_projection)
+        self.layout.addWidget(self.submit_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # Horizontal Layout for Table and Graph with balanced widths
+        self.results_layout = QHBoxLayout()
+        self.table = QTableWidget()
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.results_layout.addWidget(self.table, 1)
+
+        self.figure, self.ax = plt.subplots()
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Create a frame to wrap the graph
+        self.graph_frame = QFrame()
+        self.graph_frame.setStyleSheet("""
+            QFrame {
+                border: 2px solid #444444;
+                border-radius: 8px;
+                background-color: white;
+            }
+        """)
+
+        # Apply padding around the graph by using a QVBoxLayout inside the frame
+        graph_layout = QVBoxLayout()
+        graph_layout.setContentsMargins(10, 10, 10, 10)  # Add padding for better spacing
+        graph_layout.addWidget(self.canvas)
+
+        # Set the layout to the frame
+        self.graph_frame.setLayout(graph_layout)
+
+        # Replace direct graph addition with the styled frame
+        self.results_layout.addWidget(self.graph_frame, 1)
+
+        self.layout.addLayout(self.results_layout)
+
+        # Download Buttons
+        self.download_layout = QHBoxLayout()
+        self.download_table_button = QPushButton("Download Table")
+        self.download_table_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.download_table_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.download_table_button.clicked.connect(self.download_table)
+        self.download_graph_button = QPushButton("Download Graph")
+        self.download_graph_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.download_graph_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.download_graph_button.clicked.connect(self.download_graph)
+
+        self.download_layout.addWidget(self.download_table_button)
+        self.download_layout.addWidget(self.download_graph_button)
+        self.layout.addLayout(self.download_layout)
+
+        self.setLayout(self.layout)
+
+    def validate_and_generate_projection(self):
+        address = self.address_input.text().strip()
+
+        if not address:
+            self.address_input.setStyleSheet("background-color: rgba(248, 215, 218, 0.3);")  # Subtle red
+            print("No Address")
+            return
+
+        self.submit_button.setEnabled(False)
+
+        # Create and start the validator thread
+        self.validator_thread = AddressValidator(address)
+        self.validator_thread.result_signal.connect(self.handle_address_validation_and_generate)
+        self.validator_thread.start()
+
+    def handle_address_validation_and_generate(self, is_valid):
+        if is_valid:
+            self.address_input.setStyleSheet("font-size: 16px; padding: 8px;")
+            print("Address validated, generating projection...")
+            self.generate_projection()
+        else:
+            self.address_input.setStyleSheet("background-color: rgba(255, 100, 100, 0.3);")  # Subtle red
+            print("Address validation failed")
+
+        self.submit_button.setEnabled(True)
+
+    def generate_projection(self):
+        try:
+            # Get home value and validate range
+            try:
+                home_value = int(self.value_input.text())
+                home_value = max(10000, min(home_value, 10000000))  # Clamp between 10k and 10M
+                self.value_input.setText(str(int(home_value)))
+            except ValueError:
+                home_value = 500000  # Default
+                self.value_input.setText(str(int(home_value)))
+
+            # Get year and validate range
+            try:
+                year = int(self.year_input.text())
+                year = max(2025, min(year, 2125))  # Clamp between 2025 and 2100
+                self.year_input.setText(str(year))
+            except ValueError:
+                year = 2025
+                self.year_input.setText(str(year))
+
+            print(f"Generating projection for: Value=${home_value}, Year={year}")
+
+            # base rate was calculated by Cambridge avg home insurance / Cambridge avg home price
+            base_rate = 0.006  # Starting insurance rate (0.6% of home value per year)
+            inflation_factor = 1.02  # Annual price increase due to inflation
+            start_year = 2025
+            end_year = 2125
+
+            hurricane_rate_2025 = 1 / 2.5  # Hurricanes per year in 2025
+            hurricane_rate_2125 = 1 / 1.5  # Hurricanes per year in 2125
+
+            # Compute yearly rate change using linear interpolation
+            rate_increase_per_year = (hurricane_rate_2125 - hurricane_rate_2025) / (end_year - start_year)
+
+            # Hurricane intensity model based on NOAA projections
+            initial_proportion_cat4_plus = 0.30  # 30% in 2025
+            target_increase = 0.20  # 50% in 2125
+            proportion_increase_per_year = target_increase / (end_year - start_year)
+
+            # Sensitivity factor for how hurricanes impact insurance rates
+            sensitivity_factor = 0.7
+
+            years = list(range(start_year, year + 1))
+            insurance_costs = []
+            cat3_or_lower_counts = []
+            cat4_or_greater_counts = []
+            cumulative_hurricanes = []
+            cumulative_insurance_increase = []
+            cumulative_cat3 = 0
+            cumulative_cat4 = 0
+
+            # Initial insurance cost for baseline comparison
+            base_insurance_cost = home_value * base_rate
+
+            for y in years:
+                # Inflation-adjusted insurance cost
+                inflation_factor_yearly = (inflation_factor ** (y - start_year))
+                insurance_cost = home_value * base_rate * inflation_factor_yearly
+
+                # Hurricane occurrence calculation
+                current_hurricane_rate = hurricane_rate_2025 + (y - start_year) * rate_increase_per_year
+                total_hurricanes = np.random.poisson(current_hurricane_rate)
+
+                # Determine proportion of Category 4+ hurricanes for this year
+                cat4_proportion = initial_proportion_cat4_plus + proportion_increase_per_year * (y - start_year)
+                cat4_proportion = min(cat4_proportion, 1.0)  # Ensure it never exceeds 100%
+
+                # Split hurricanes into categories
+                cat4_hurricanes = int(round(total_hurricanes * cat4_proportion))
+                cat3_or_lower_hurricanes = total_hurricanes - cat4_hurricanes
+
+                # Accumulate hurricane counts
+                cumulative_cat3 += cat3_or_lower_hurricanes
+                cumulative_cat4 += cat4_hurricanes
+                total_cumulative_hurricanes = cumulative_cat3 + cumulative_cat4
+
+                # Adjust insurance cost based on hurricane intensity
+                insurance_adjustment = 1 + sensitivity_factor * (cat4_proportion - initial_proportion_cat4_plus)
+                insurance_cost *= insurance_adjustment
+
+                # Calculate cumulative insurance increase percentage
+                insurance_increase_percent = ((insurance_cost - base_insurance_cost) / base_insurance_cost) * 100
+
+                # Store results
+                insurance_costs.append(insurance_cost)
+                cat3_or_lower_counts.append(cat3_or_lower_hurricanes)
+                cat4_or_greater_counts.append(cat4_hurricanes)
+                cumulative_hurricanes.append(total_cumulative_hurricanes)
+                cumulative_insurance_increase.append(insurance_increase_percent)
+
+            # Display updated results
+            self.display_results(years, insurance_costs, cat3_or_lower_counts, cat4_or_greater_counts,
+                                 cumulative_hurricanes, cumulative_insurance_increase)
+
+        except ValueError as e:
+            print(f"Projection error: {e}")
+            return
+
+    def display_results(self, years, costs, cat3_counts, cat4_counts, cumulative_hurricanes,
+                        cumulative_insurance_increase):
+        """Update the table and graph with new projections"""
+
+        # Update Table
+        self.table.setRowCount(len(years))
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels([
+            "Year", "Estimated Yearly Insurance ($)", "Cat 3 or Lower Hurricanes",
+            "Cat 4+ Hurricanes", "Cumulative Hurricanes", "Cumulative Price Increase (%)"
+        ])
+
+        self.table.setColumnWidth(0, 65)
+        self.table.setColumnWidth(1, 170)
+        self.table.setColumnWidth(2, 170)
+        self.table.setColumnWidth(3, 170)
+        self.table.setColumnWidth(4, 170)
+        self.table.setColumnWidth(5, 170)
+
+        for i, (year, cost, cat3, cat4, cum_hurr, cum_insur) in enumerate(
+                zip(years, costs, cat3_counts, cat4_counts, cumulative_hurricanes, cumulative_insurance_increase)):
+            self.table.setItem(i, 0, QTableWidgetItem(str(year)))
+            self.table.setItem(i, 1, QTableWidgetItem(f"${cost:,.2f}"))
+            self.table.setItem(i, 2, QTableWidgetItem(str(cat3)))
+            self.table.setItem(i, 3, QTableWidgetItem(str(cat4)))
+            self.table.setItem(i, 4, QTableWidgetItem(str(cum_hurr)))
+            self.table.setItem(i, 5, QTableWidgetItem(f"{cum_insur:.2f}%"))
+
+        # Update Graph
+        self.ax.clear()
+        self.ax.plot(years, costs, marker='o', linestyle='-', color='b', label="Insurance Cost ($)")
+        self.ax.set_xlabel("Year")
+        self.ax.set_ylabel("Insurance Cost ($)")
+        self.ax.set_title("Projected Home Insurance Costs")
+        self.ax.legend()
+        self.canvas.draw()
+
+    def download_table(self):
+        # Get user's home directory and Downloads folder
+        home_dir = os.path.expanduser("~")
+        downloads_dir = os.path.join(home_dir, "Downloads")
+
+        # Ensure the Downloads folder exists
+        if not os.path.exists(downloads_dir):
+            os.makedirs(downloads_dir)
+
+        # Define default file path
+        file_path = os.path.join(downloads_dir, "Insurance_Projection_Data.csv")
+
+        # Allow user to choose the final location (pre-set to Downloads)
+        path, _ = QFileDialog.getSaveFileName(self, "Save Table", file_path, "CSV Files (*.csv)")
+
+        if path:
+            data = []
+            for row in range(self.table.rowCount()):
+                data.append([self.table.item(row, col).text() for col in range(self.table.columnCount())])
+
+            df = pd.DataFrame(data,
+                              columns=["Year", "Estimated Yearly Insurance ($)", "Cat 3 or Lower Hurricanes",
+                                       "Cat 4+ Hurricanes", "Cumulative Hurricanes", "Cumulative Price Increase (%)"])
+            df.to_csv(path, index=False)
+
+    def download_graph(self):
+        # Get user's home directory and Downloads folder
+        home_dir = os.path.expanduser("~")
+        downloads_dir = os.path.join(home_dir, "Downloads")
+
+        # Ensure the Downloads folder exists
+        if not os.path.exists(downloads_dir):
+            os.makedirs(downloads_dir)
+
+        # Define default file path
+        file_path = os.path.join(downloads_dir, "Insurance_Projection_Graph.png")
+
+        # Allow user to choose the final location (pre-set to Downloads)
+        path, _ = QFileDialog.getSaveFileName(self, "Save Graph", file_path, "PNG Files (*.png)")
+
+        if path:
+            self.figure.savefig(path)
 
 
 # 3D elevation flood level simulator class
@@ -55,7 +406,7 @@ class Elevation(QWidget):
 
         # Year label and slider
         self.year_label = QLabel("Year: 2025")
-        self.year_label.setStyleSheet("font-size: 20px;")
+        self.year_label.setStyleSheet("font-size: 22px;")
         controls_layout.addWidget(self.year_label)
 
         # Slider (water level factor)
@@ -686,9 +1037,9 @@ class MainApp(QMainWindow):
             "Home": home_page,
             "Settings": QWidget(),
             "-- Street View": StreetView(),
-            "-- 3D Elevation": Elevation(),
+            "-- 3D Elevation": QWidget(),
             "-- Interactive Map": InteractiveMap(),
-            "Insurance Projections": QWidget(),
+            "Insurance Projections": InsuranceProjections(),
             "Damage Estimator": QWidget()
         }
 
