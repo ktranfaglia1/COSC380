@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QLineEdit, QFrame,
     QTableWidget, QTableWidgetItem, QComboBox, QFileDialog,
     QAbstractItemView, QMessageBox, QTabWidget, QGroupBox,
-    QSpinBox, QHeaderView
+    QSpinBox, QHeaderView, QScrollArea
 )
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QCursor, QFont
@@ -21,6 +21,10 @@ import sys
 import os
 import folium
 import rasterio
+import zipfile
+import io
+import datetime
+from pathlib import Path
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError, GeocoderQueryError
 from rasterio.mask import mask
@@ -48,6 +52,10 @@ class DamageEstimator(QWidget):
         self.canvas = None
         self.economic_figure = None
         self.economic_canvas = None
+        self.download_damage_button = None
+        self.download_economic_button = None
+        self.analyze_button = None
+        self.economic_analyze_button = None
 
         # Main layout
         self.layout = QVBoxLayout()
@@ -61,6 +69,8 @@ class DamageEstimator(QWidget):
 
         # Create tabs
         self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("QTabBar::tab { font-size: 14px; height: 30px; }")
+        self.tabs.tabBar().setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
         # Tab 1: Property Damage Estimation
         self.property_tab = QWidget()
@@ -95,6 +105,7 @@ class DamageEstimator(QWidget):
 
         # Parameter controls group (existing code)
         controls_group = QGroupBox("Scenario Parameters")
+        # Change 1: Update the label size
         controls_group.setStyleSheet("QGroupBox { font-size: 16px; }")
         controls_layout = QVBoxLayout()
 
@@ -107,6 +118,7 @@ class DamageEstimator(QWidget):
         self.year_slider.setValue(0)
         self.year_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.year_slider.setTickInterval(10)
+        self.year_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.year_slider.valueChanged.connect(self.update_year_label)
         year_layout.addWidget(self.year_label)
         year_layout.addWidget(self.year_slider)
@@ -119,22 +131,26 @@ class DamageEstimator(QWidget):
         self.hurricane_combo = QComboBox()
         self.hurricane_combo.addItems(["Category 1", "Category 2", "Category 3", "Category 4", "Category 5"])
         self.hurricane_combo.setStyleSheet("font-size: 18px;")
+        self.hurricane_combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         hurricane_layout.addWidget(hurricane_label)
         hurricane_layout.addWidget(self.hurricane_combo)
+        hurricane_layout.addStretch()
         controls_layout.addLayout(hurricane_layout)
 
-        # Property value input (existing code)
+        # Property value input
         value_layout = QHBoxLayout()
         value_label = QLabel("Total Property Value ($):")
         value_label.setStyleSheet("font-size: 18px;")
         self.property_value_input = QLineEdit("250000000")  # Default: $250M
         self.property_value_input.setStyleSheet("font-size: 18px;")
+        self.property_value_input.editingFinished.connect(self.validate_property_value)
         value_layout.addWidget(value_label)
         value_layout.addWidget(self.property_value_input)
         controls_layout.addLayout(value_layout)
 
         # Building distribution controls (existing code)
         buildings_group = QGroupBox("Building Types")
+        # Change 1: Update the label size
         buildings_group.setStyleSheet("QGroupBox { font-size: 16px; }")
         buildings_layout = QVBoxLayout()
 
@@ -154,6 +170,7 @@ class DamageEstimator(QWidget):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(0, 100)
             slider.setValue(default_pct)
+            slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             slider.valueChanged.connect(lambda val, lbl=label, bt=btype: self.update_building_label(val, lbl, bt))
             slider_layout.addWidget(label)
             slider_layout.addWidget(slider)
@@ -167,18 +184,28 @@ class DamageEstimator(QWidget):
         self.property_layout.addWidget(controls_group)
         self.property_layout.addWidget(buildings_group)
 
-        # Analysis button
-        analyze_button = QPushButton("Analyze Damage")
-        analyze_button.setStyleSheet("font-size: 22px; padding: 8px;")
-        analyze_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        analyze_button.clicked.connect(self.analyze_damage)
-        self.property_layout.addWidget(analyze_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+        # Analysis button & download button
+        analyze_button_layout = QHBoxLayout()
+        self.analyze_button = QPushButton("Analyze Damage")
+        self.analyze_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.analyze_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.analyze_button.clicked.connect(self.analyze_damage)
+        analyze_button_layout.addWidget(self.analyze_button)
+
+        self.download_damage_button = QPushButton("Download Damage Analysis")
+        self.download_damage_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.download_damage_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.download_damage_button.clicked.connect(self.download_property_results)
+        self.download_damage_button.setEnabled(False)
+        analyze_button_layout.addWidget(self.download_damage_button)
+        self.property_layout.addLayout(analyze_button_layout)
 
         # ---- SEPARATE RESULTS SECTIONS ----
 
         # 1. Table Results Section
         table_section = QGroupBox("Damage Breakdown")
         table_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
+        table_section.setFixedHeight(125)
         table_layout = QVBoxLayout()
 
         # Table for damage breakdown
@@ -191,7 +218,7 @@ class DamageEstimator(QWidget):
         self.results_table.setColumnWidth(2, 150)  # % of Total column
         self.results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.results_table.setRowCount(0)  # Start with no rows
-        self.results_table.setMinimumHeight(75)
+        self.results_table.setFixedHeight(75)
 
         table_layout.addWidget(self.results_table)
         table_section.setLayout(table_layout)
@@ -202,26 +229,54 @@ class DamageEstimator(QWidget):
         chart_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
         chart_layout = QVBoxLayout()
 
+        # Change 3: Use a scroll area to maintain plot size
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        chart_widget = QWidget()
+        chart_inner_layout = QVBoxLayout(chart_widget)
+
         # Chart for visualization
         self.figure = Figure(figsize=(10, 6))
         self.canvas = FigureCanvas(self.figure)
-        chart_layout.addWidget(self.canvas)
+        self.canvas.setMinimumHeight(400)
+        chart_inner_layout.addWidget(self.canvas)
+
+        scroll_area.setWidget(chart_widget)
+        chart_layout.addWidget(scroll_area)
 
         chart_section.setLayout(chart_layout)
         self.property_layout.addWidget(chart_section)
 
-        # Download button
-        download_button = QPushButton("Export Results")
-        download_button.setStyleSheet("font-size: 22px; padding: 8px;")
-        download_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        download_button.clicked.connect(self.export_results)
-        self.property_layout.addWidget(download_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+    def validate_property_value(self):
+        """Enforces minimum and maximum values for the property value input"""
+        try:
+            # Get current value, removing any commas
+            current_value = float(self.property_value_input.text().replace(',', ''))
+
+            # Set min/max constraints
+            MIN_VALUE = 1000000  # $1M
+            MAX_VALUE = 10000000000  # $10B
+
+            # Enforce limits
+            if current_value < MIN_VALUE:
+                self.property_value_input.setText(f"{MIN_VALUE:,.0f}")
+            elif current_value > MAX_VALUE:
+                self.property_value_input.setText(f"{MAX_VALUE:,.0f}")
+            else:
+                self.property_value_input.setText(f"{current_value:,.0f}")
+        except ValueError:
+            # If conversion fails, reset to default
+            self.property_value_input.setText("250000000")
+            QMessageBox.warning(self, "Invalid Input",
+                                "Please enter a valid number. The value has been reset to the default.")
 
     def setup_economic_tab(self):
         """Set up the economic impact analysis tab"""
 
         # Economic impact controls (existing code)
         controls_group = QGroupBox("Economic Impact Parameters")
+        # Change 1: Update the label size
+        controls_group.setStyleSheet("QGroupBox { font-size: 16px; }")
         controls_layout = QVBoxLayout()
 
         # Recovery period (existing code)
@@ -232,12 +287,16 @@ class DamageEstimator(QWidget):
         self.recovery_spinner.setRange(1, 60)
         self.recovery_spinner.setValue(12)  # Default: 1 year
         self.recovery_spinner.setStyleSheet("font-size: 18px;")
+        self.recovery_spinner.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         recovery_layout.addWidget(recovery_label)
         recovery_layout.addWidget(self.recovery_spinner)
+        recovery_layout.addStretch()
         controls_layout.addLayout(recovery_layout)
 
         # Economic impacts to include (existing code)
         impacts_group = QGroupBox("Impact Categories")
+        # Change 1: Update the label size
+        impacts_group.setStyleSheet("QGroupBox { font-size: 16px; }")
         impacts_layout = QVBoxLayout()
 
         # Economic impact categories with default values (existing code)
@@ -257,6 +316,7 @@ class DamageEstimator(QWidget):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(0, 100)
             slider.setValue(default_pct)
+            slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             slider.valueChanged.connect(lambda val, lbl=label, ic=impact: self.update_impact_label(val, lbl, ic))
             slider_layout.addWidget(label)
             slider_layout.addWidget(slider)
@@ -271,29 +331,41 @@ class DamageEstimator(QWidget):
         self.economic_layout.addWidget(impacts_group)
 
         # Analysis button
-        economic_analyze_button = QPushButton("Analyze Economic Impact")
-        economic_analyze_button.setStyleSheet("font-size: 22px; padding: 8px;")
-        economic_analyze_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        economic_analyze_button.clicked.connect(self.analyze_economic_impact)
-        self.economic_layout.addWidget(economic_analyze_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+        economic_analyze_button_layout = QHBoxLayout()
+        self.economic_analyze_button = QPushButton("Analyze Economic Impact")
+        self.economic_analyze_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.economic_analyze_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.economic_analyze_button.clicked.connect(self.analyze_economic_impact)
+        economic_analyze_button_layout.addWidget(self.economic_analyze_button)
+        self.download_economic_button = QPushButton("Download Economic Analysis")
+        self.download_economic_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.download_economic_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.download_economic_button.clicked.connect(self.download_economic_results)
+        self.download_economic_button.setEnabled(False)
+        economic_analyze_button_layout.addWidget(self.download_economic_button)
+        self.economic_layout.addLayout(economic_analyze_button_layout)
 
         # ---- SEPARATE RESULTS SECTIONS ----
 
         # 1. Table Results Section
         economic_table_section = QGroupBox("Economic Impact Breakdown")
         economic_table_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
+        economic_table_section.setFixedHeight(125)
         economic_table_layout = QVBoxLayout()
 
         # Table for economic impact breakdown
         self.economic_table = QTableWidget()
         self.economic_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.economic_table.setColumnCount(4)
+        self.economic_table.setHorizontalHeaderLabels(
+            ["Impact Category", "Short-term ($)", "Long-term ($)", "Total ($)"])
         # Set specific widths for each column
         self.economic_table.setColumnWidth(0, 200)  # Impact Category column
         self.economic_table.setColumnWidth(1, 150)  # Short-term column
         self.economic_table.setColumnWidth(2, 150)  # Long-term column
         self.economic_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.economic_table.setRowCount(0)  # Start with no rows
+        self.economic_table.setFixedHeight(75)
 
         economic_table_layout.addWidget(self.economic_table)
         economic_table_section.setLayout(economic_table_layout)
@@ -304,20 +376,23 @@ class DamageEstimator(QWidget):
         economic_chart_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
         economic_chart_layout = QVBoxLayout()
 
+        # Change 3: Use a scroll area to maintain plot size
+        economic_scroll_area = QScrollArea()
+        economic_scroll_area.setWidgetResizable(True)
+        economic_chart_widget = QWidget()
+        economic_chart_inner_layout = QVBoxLayout(economic_chart_widget)
+
         # Chart for visualization
         self.economic_figure = Figure(figsize=(10, 6))
         self.economic_canvas = FigureCanvas(self.economic_figure)
-        economic_chart_layout.addWidget(self.economic_canvas)
+        self.economic_canvas.setMinimumHeight(400)
+        economic_chart_inner_layout.addWidget(self.economic_canvas)
+
+        economic_scroll_area.setWidget(economic_chart_widget)
+        economic_chart_layout.addWidget(economic_scroll_area)
 
         economic_chart_section.setLayout(economic_chart_layout)
         self.economic_layout.addWidget(economic_chart_section)
-
-        # Download button
-        economic_download_button = QPushButton("Export Economic Analysis")
-        economic_download_button.setStyleSheet("font-size: 22px; padding: 8px;")
-        economic_download_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        economic_download_button.clicked.connect(self.export_economic_results)
-        self.economic_layout.addWidget(economic_download_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
     def update_year_label(self):
         """Update the year label as the slider changes"""
@@ -330,15 +405,29 @@ class DamageEstimator(QWidget):
 
         # Ensure total is 100%
         total = sum(slider.value() for slider in self.building_sliders.values())
-        if total != 100:
-            # Highlight if not 100%
-            label.setStyleSheet("font-size: 16px; color: red;")
-        else:
-            label.setStyleSheet("font-size: 16px;")
+
+        # Reset all labels to normal or red depending on total
+        for lbl in [widget for widget in self.findChildren(QLabel) if
+                    any(bt in widget.text() for bt in self.building_sliders.keys())]:
+            if total != 100:
+                lbl.setStyleSheet("font-size: 16px; color: red;")
+            else:
+                lbl.setStyleSheet("font-size: 16px;")
 
     def update_impact_label(self, value, label, impact_category):
         """Update economic impact category percentage label"""
         label.setText(f"{impact_category}: {value}%")
+
+        # Ensure total is 100%
+        total = sum(slider.value() for slider in self.impact_sliders.values())
+
+        # Reset all labels to normal or red depending on total
+        for lbl in [widget for widget in self.findChildren(QLabel) if
+                    any(ic in widget.text() for ic in self.impact_sliders.keys())]:
+            if total != 100:
+                lbl.setStyleSheet("font-size: 16px; color: red;")
+            else:
+                lbl.setStyleSheet("font-size: 16px;")
 
     def initialize_damage_data(self):
         """Initialize damage modeling data based on HAZUS-MH methodology"""
@@ -458,6 +547,8 @@ class DamageEstimator(QWidget):
     def analyze_damage(self):
         """Analyze property damage based on input parameters"""
         try:
+            self.download_damage_button.setEnabled(True)
+
             # Get common parameters
             params = self.get_current_parameters()
 
@@ -625,6 +716,14 @@ class DamageEstimator(QWidget):
     def analyze_economic_impact(self):
         """Analyze economic impact based on input parameters"""
         try:
+            self.download_economic_button.setEnabled(True)
+
+            # Check if impact categories add up to 100%
+            total_impact_pct = sum(slider.value() for slider in self.impact_sliders.values())
+            if total_impact_pct != 100:
+                QMessageBox.warning(self, "Input Error", "Impact category percentages must sum to 100%.")
+                return
+
             # Get common parameters
             params = self.get_current_parameters()
             recovery_months = self.recovery_spinner.value()
@@ -744,7 +843,7 @@ class DamageEstimator(QWidget):
         ax1.set_ylabel('Economic Impact ($)')
         ax1.set_title('Economic Impact by Category')
         ax1.set_xticks(x)
-        ax1.set_xticklabels(categories, rotation=45, ha='right')
+        ax1.set_xticklabels(categories, rotation=30, ha='right')
         ax1.legend()
 
         # Format y-axis as currency
@@ -765,127 +864,130 @@ class DamageEstimator(QWidget):
         self.economic_figure.tight_layout()
         self.economic_canvas.draw()
 
-    def export_results(self):
-        """Export property damage analysis results to a CSV file"""
+    def download_property_results(self):
+        """Download property damage analysis results with user-selected path"""
         try:
-            # Ask user for save location
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Property Damage Analysis", "", "CSV Files (*.csv);;All Files (*)"
+            download_dir = str(Path.home() / "Downloads")
+            default_zip_filename = os.path.join(download_dir, "Cambridge_Damage_Analysis.zip")
+
+            # Ask user for save location (default to Downloads)
+            zip_filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Damage Analysis",
+                default_zip_filename,
+                "ZIP Files (*.zip)"
             )
 
-            if not file_path:
-                return  # User canceled
+            # Check if user canceled
+            if not zip_filename:
+                return
 
-            # Ensure file has .csv extension
-            if not file_path.endswith('.csv'):
-                file_path += '.csv'
+            # Create a zip file
+            with zipfile.ZipFile(zip_filename, 'w') as zipf:
+                # 1. Export table data to CSV
+                csv_data = io.StringIO()
 
-            # Create data for export
-            data = []
-            for row in range(self.results_table.rowCount()):
-                row_data = []
-                for col in range(self.results_table.columnCount()):
-                    item = self.results_table.item(row, col)
-                    if item:
-                        row_data.append(item.text())
-                    else:
-                        row_data.append("")
-                if any(row_data):  # Only add non-empty rows
-                    data.append(row_data)
+                # Write header row
+                headers = ["Damage Category", "Amount ($)", "% of Total", "Notes"]
+                csv_data.write(",".join(f'"{h}"' for h in headers) + "\n")
 
-            # Convert to DataFrame for easy CSV export
-            headers = ["Damage Category", "Amount ($)", "% of Total", "Notes"]
-            df = pd.DataFrame(data, columns=headers)
+                # Write data rows
+                for row in range(self.results_table.rowCount()):
+                    row_data = []
+                    for col in range(self.results_table.columnCount()):
+                        item = self.results_table.item(row, col)
+                        if item:
+                            # Quote the cell data to handle commas and special characters
+                            row_data.append(f'"{item.text()}"')
+                        else:
+                            row_data.append('""')
+                    csv_data.write(",".join(row_data) + "\n")
 
-            # Add metadata
-            year = self.year_slider.value() + 2025
-            hurricane_category = self.hurricane_combo.currentIndex() + 1
-            metadata = pd.DataFrame([
-                ["Analysis Date", pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")],
-                ["Scenario Year", str(year)],
-                ["Hurricane Category", f"Category {hurricane_category}"],
-                ["Total Property Value", self.property_value_input.text()]
-            ], columns=["Parameter", "Value"])
+                # Add CSV to zip file
+                zipf.writestr("Cambridge_Damage_Analysis_Table.csv", csv_data.getvalue())
 
-            # Export to CSV
-            with open(file_path, 'w', newline='') as f:
-                f.write("# Cambridge Flood Damage Analysis\n")
-                f.write("# Generated by Cambridge Flood Analysis Tool\n\n")
+                # 2. Save the plot as PNG
+                plot_buffer = io.BytesIO()
+                self.figure.savefig(plot_buffer, format='png', dpi=300)
+                plot_buffer.seek(0)
+                zipf.writestr("Cambridge_Damage_Visualization.png", plot_buffer.getvalue())
 
-                # Write metadata
-                metadata.to_csv(f, index=False)
-                f.write("\n\n")
+                # 3. Add a metadata file
+                meta_data = io.StringIO()
+                meta_data.write("# Cambridge Flood Damage Analysis\n")
+                meta_data.write("# Generated by Cambridge Flood Analysis Tool\n\n")
+                meta_data.write(f"Analysis Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                meta_data.write(f"Scenario Year: {self.year_slider.value() + 2025}\n")
+                meta_data.write(f"Hurricane Category: Category {self.hurricane_combo.currentIndex() + 1}\n")
+                meta_data.write(f"Total Property Value: {self.property_value_input.text()}\n")
 
-                # Write damage data
-                df.to_csv(f, index=False)
-
-            QMessageBox.information(self, "Export Successful",
-                                    f"Results successfully exported to {file_path}")
+                zipf.writestr("Cambridge_Analysis_Metadata.txt", meta_data.getvalue())
 
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Error exporting results: {str(e)}")
+            QMessageBox.critical(self, "Download Error", f"Error downloading results: {str(e)}")
 
-    def export_economic_results(self):
-        """Export economic impact analysis results to a CSV file"""
+    def download_economic_results(self):
+        """Download economic impact analysis results with user-selected path"""
         try:
-            # Ask user for save location
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "Save Economic Impact Analysis", "", "CSV Files (*.csv);;All Files (*)"
+            download_dir = str(Path.home() / "Downloads")
+            default_zip_filename = os.path.join(download_dir, "Cambridge_Economic_Analysis.zip")
+
+            # Ask user for save location (default to Downloads)
+            zip_filename, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Economic Analysis",
+                default_zip_filename,
+                "ZIP Files (*.zip)"
             )
 
-            if not file_path:
-                return  # User canceled
+            # Check if user canceled
+            if not zip_filename:
+                return
 
-            # Ensure file has .csv extension
-            if not file_path.endswith('.csv'):
-                file_path += '.csv'
+            # Create a zip file
+            with zipfile.ZipFile(zip_filename, 'w') as zipf:
+                # 1. Export table data to CSV
+                csv_data = io.StringIO()
 
-            # Create data for export
-            data = []
-            for row in range(self.economic_table.rowCount()):
-                row_data = []
-                for col in range(self.economic_table.columnCount()):
-                    item = self.economic_table.item(row, col)
-                    if item:
-                        row_data.append(item.text())
-                    else:
-                        row_data.append("")
-                if any(row_data):  # Only add non-empty rows
-                    data.append(row_data)
+                # Write header row
+                headers = ["Impact Category", "Short-term ($)", "Long-term ($)", "Total ($)"]
+                csv_data.write(",".join(f'"{h}"' for h in headers) + "\n")
 
-            # Convert to DataFrame for easy CSV export
-            headers = ["Impact Category", "Short-term ($)", "Long-term ($)", "Total ($)"]
-            df = pd.DataFrame(data, columns=headers)
+                # Write data rows
+                for row in range(self.economic_table.rowCount()):
+                    row_data = []
+                    for col in range(self.economic_table.columnCount()):
+                        item = self.economic_table.item(row, col)
+                        if item:
+                            # Quote the cell data to handle commas and special characters
+                            row_data.append(f'"{item.text()}"')
+                        else:
+                            row_data.append('""')
+                    csv_data.write(",".join(row_data) + "\n")
 
-            # Add metadata
-            year = self.year_slider.value() + 2025
-            hurricane_category = self.hurricane_combo.currentIndex() + 1
-            recovery_months = self.recovery_spinner.value()
-            metadata = pd.DataFrame([
-                ["Analysis Date", pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")],
-                ["Scenario Year", str(year)],
-                ["Hurricane Category", f"Category {hurricane_category}"],
-                ["Recovery Period", f"{recovery_months} months"],
-                ["Total Property Value", self.property_value_input.text()]
-            ], columns=["Parameter", "Value"])
+                # Add CSV to zip file
+                zipf.writestr("Cambridge_Economic_Analysis_Table.csv", csv_data.getvalue())
 
-            # Export to CSV
-            with open(file_path, 'w', newline='') as f:
-                f.write("# Cambridge Economic Impact Analysis\n")
-                f.write("# Generated by Cambridge Flood Analysis Tool\n\n")
+                # 2. Save the plot as PNG
+                plot_buffer = io.BytesIO()
+                self.economic_figure.savefig(plot_buffer, format='png', dpi=300)
+                plot_buffer.seek(0)
+                zipf.writestr("Cambridge_Economic_Visualization.png", plot_buffer.getvalue())
 
-                # Write metadata
-                metadata.to_csv(f, index=False)
-                f.write("\n\n")
+                # 3. Add a metadata file
+                meta_data = io.StringIO()
+                meta_data.write("# Cambridge Economic Impact Analysis\n")
+                meta_data.write("# Generated by Cambridge Flood Analysis Tool\n\n")
+                meta_data.write(f"Analysis Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                meta_data.write(f"Scenario Year: {self.year_slider.value() + 2025}\n")
+                meta_data.write(f"Hurricane Category: Category {self.hurricane_combo.currentIndex() + 1}\n")
+                meta_data.write(f"Recovery Period: {self.recovery_spinner.value()} months\n")
+                meta_data.write(f"Total Property Value: {self.property_value_input.text()}\n")
 
-                # Write impact data
-                df.to_csv(f, index=False)
-
-            QMessageBox.information(self, "Export Successful",
-                                    f"Economic analysis successfully exported to {file_path}")
+                zipf.writestr("Cambridge_Analysis_Metadata.txt", meta_data.getvalue())
 
         except Exception as e:
-            QMessageBox.critical(self, "Export Error", f"Error exporting economic analysis: {str(e)}")
+            QMessageBox.critical(self, "Download Error", f"Error downloading economic analysis: {str(e)}")
 
 
 class AddressValidator(QThread):
@@ -942,7 +1044,6 @@ class InsuranceProjections(QWidget):
 
         # Function to center label and input in an HBoxLayout
         def create_centered_row(label_text, input_widget, w_width=695, l_width=125):
-            input_widget.returnPressed.connect(self.validate_and_generate_projection)
             input_widget.setStyleSheet("font-size: 16px; padding: 8px;")
             input_widget.setFixedWidth(w_width)
 
@@ -964,6 +1065,10 @@ class InsuranceProjections(QWidget):
         self.address_input.setText("307 Gay St, Cambridge, MD 21613")
         self.value_input.setText("250000")
         self.year_input.setText("2025")
+
+        # Connect validation signals
+        self.value_input.editingFinished.connect(self.validate_home_value)
+        self.year_input.editingFinished.connect(self.validate_projection_year)
 
         # Add centered rows to the form container
         form_container.addLayout(create_centered_row("Address:", self.address_input))
@@ -1020,10 +1125,12 @@ class InsuranceProjections(QWidget):
         self.download_table_button.setStyleSheet("font-size: 22px; padding: 8px;")
         self.download_table_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.download_table_button.clicked.connect(self.download_table)
+        self.download_table_button.setEnabled(False)
         self.download_graph_button = QPushButton("Download Graph")
         self.download_graph_button.setStyleSheet("font-size: 22px; padding: 8px;")
         self.download_graph_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.download_graph_button.clicked.connect(self.download_graph)
+        self.download_graph_button.setEnabled(False)
 
         self.download_layout.addWidget(self.download_table_button)
         self.download_layout.addWidget(self.download_graph_button)
@@ -1031,13 +1138,24 @@ class InsuranceProjections(QWidget):
 
         self.setLayout(self.layout)
 
+    # Update validate_and_generate_projection to handle empty address differently
     def validate_and_generate_projection(self):
+        """Validate all inputs and generate projection if valid"""
         address = self.address_input.text().strip()
 
         if not address:
-            self.address_input.setStyleSheet("background-color: rgba(248, 215, 218, 0.3);")  # Subtle red
-            print("No Address")
+            # Reset to default address
+            default_address = "307 Gay St, Cambridge, MD 21613"
+            self.address_input.setText(default_address)
+
+            # Show error message
+            QMessageBox.warning(self, "Invalid Address",
+                                "Please enter a valid Cambridge address. The address has been reset to the default.")
             return
+
+        # Validate inputs
+        self.validate_home_value()
+        self.validate_projection_year()
 
         self.submit_button.setEnabled(False)
 
@@ -1052,31 +1170,31 @@ class InsuranceProjections(QWidget):
             print("Address validated, generating projection...")
             self.generate_projection()
         else:
-            self.address_input.setStyleSheet("font-size: 16px; padding: 8px; "
-                                             "background-color: rgba(255, 100, 100, 0.3);")  # Subtle red
+            # Reset to default address
+            default_address = "307 Gay St, Cambridge, MD 21613"
+            self.address_input.setText(default_address)
+
+            # Reset styling to normal
+            self.address_input.setStyleSheet("font-size: 16px; padding: 8px;")
+
+            # Show error message
+            QMessageBox.warning(self, "Invalid Address",
+                                "Not a valid Cambridge address. The address has been reset to the default.")
+
             print("Address validation failed")
 
         self.submit_button.setEnabled(True)
 
     def generate_projection(self):
         try:
-            # Get home value and validate range
-            try:
-                home_value = int(self.value_input.text())
-                home_value = max(10000, min(home_value, 10000000))  # Clamp between 10k and 10M
-                self.value_input.setText(str(int(home_value)))
-            except ValueError:
-                home_value = 500000  # Default
-                self.value_input.setText(str(int(home_value)))
+            self.download_table_button.setEnabled(True)
+            self.download_graph_button.setEnabled(True)
 
-            # Get year and validate range
-            try:
-                year = int(self.year_input.text())
-                year = max(2025, min(year, 2125))  # Clamp between 2025 and 2100
-                self.year_input.setText(str(year))
-            except ValueError:
-                year = 2025
-                self.year_input.setText(str(year))
+            # Get home value (commas removed)
+            home_value = int(self.value_input.text().replace(',', ''))
+
+            # Get year
+            year = int(self.year_input.text())
 
             print(f"Generating projection for: Value=${home_value}, Year={year}")
 
@@ -1193,6 +1311,50 @@ class InsuranceProjections(QWidget):
         self.ax.legend()
         self.canvas.draw()
 
+    def validate_home_value(self):
+        """Enforces minimum and maximum values for the home value input"""
+        try:
+            # Get current value, removing any commas
+            current_value = float(self.value_input.text().replace(',', ''))
+
+            # Set min/max constraints
+            MIN_VALUE = 10000  # $10K
+            MAX_VALUE = 50000000  # $50M
+
+            # Enforce limits
+            if current_value < MIN_VALUE:
+                self.value_input.setText(f"{MIN_VALUE:,.0f}")
+            elif current_value > MAX_VALUE:
+                self.value_input.setText(f"{MAX_VALUE:,.0f}")
+            else:
+                self.value_input.setText(f"{current_value:,.0f}")
+        except ValueError:
+            # If conversion fails, reset to default
+            self.value_input.setText("250000")
+            QMessageBox.warning(self, "Invalid Input",
+                                "Please enter a valid number. The value has been reset to the default.")
+
+    def validate_projection_year(self):
+        """Enforces minimum and maximum values for the projection year input"""
+        try:
+            # Get current value
+            current_year = int(self.year_input.text())
+
+            # Set min/max constraints
+            MIN_YEAR = 2025
+            MAX_YEAR = 2125
+
+            # Enforce limits
+            if current_year < MIN_YEAR:
+                self.year_input.setText(str(MIN_YEAR))
+            elif current_year > MAX_YEAR:
+                self.year_input.setText(str(MAX_YEAR))
+        except ValueError:
+            # If conversion fails, reset to default
+            self.year_input.setText("2025")
+            QMessageBox.warning(self, "Invalid Input",
+                                "Please enter a valid year. The value has been reset to the default.")
+
     def download_table(self):
         # Get user's home directory and Downloads folder
         home_dir = os.path.expanduser("~")
@@ -1203,12 +1365,16 @@ class InsuranceProjections(QWidget):
             os.makedirs(downloads_dir)
 
         # Define default file path
-        file_path = os.path.join(downloads_dir, "Insurance_Projection_Data.csv")
+        file_path = os.path.join(downloads_dir, "Cambridge_Insurance_Projection_Data.csv")
 
         # Allow user to choose the final location (pre-set to Downloads)
         path, _ = QFileDialog.getSaveFileName(self, "Save Table", file_path, "CSV Files (*.csv)")
 
-        if path:
+        # Check if user canceled the dialog
+        if not path:
+            return  # Exit the function if no path was selected
+
+        try:
             data = []
             for row in range(self.table.rowCount()):
                 data.append([self.table.item(row, col).text() for col in range(self.table.columnCount())])
@@ -1217,6 +1383,8 @@ class InsuranceProjections(QWidget):
                               columns=["Year", "Estimated Yearly Insurance ($)", "Cat 3 or Lower Hurricanes",
                                        "Cat 4+ Hurricanes", "Cumulative Hurricanes", "Cumulative Price Increase (%)"])
             df.to_csv(path, index=False)
+        except Exception as e:
+            QMessageBox.critical(self, "Download Error", f"Error downloading insurance projection table: {str(e)}")
 
     def download_graph(self):
         # Get user's home directory and Downloads folder
@@ -1228,13 +1396,19 @@ class InsuranceProjections(QWidget):
             os.makedirs(downloads_dir)
 
         # Define default file path
-        file_path = os.path.join(downloads_dir, "Insurance_Projection_Graph.png")
+        file_path = os.path.join(downloads_dir, "Cambridge_Insurance_Projection_Graph.png")
 
         # Allow user to choose the final location (pre-set to Downloads)
         path, _ = QFileDialog.getSaveFileName(self, "Save Graph", file_path, "PNG Files (*.png)")
 
-        if path:
+        # Check if user canceled the dialog
+        if not path:
+            return  # Exit the function if no path was selected
+
+        try:
             self.figure.savefig(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Download Error", f"Error downloading insurance projection graph: {str(e)}")
 
 
 # 3D elevation flood level simulator class
