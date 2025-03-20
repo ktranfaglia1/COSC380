@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QHeaderView
 )
 from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
-from PyQt6.QtGui import QPixmap, QCursor
+from PyQt6.QtGui import QPixmap, QCursor, QFont
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.pyplot as plt
@@ -93,11 +93,12 @@ class DamageEstimator(QWidget):
     def setup_property_tab(self):
         """Set up the property damage estimation tab"""
 
-        # Parameter controls group
+        # Parameter controls group (existing code)
         controls_group = QGroupBox("Scenario Parameters")
+        controls_group.setStyleSheet("QGroupBox { font-size: 16px; }")
         controls_layout = QVBoxLayout()
 
-        # Year slider
+        # Year slider (existing code)
         year_layout = QHBoxLayout()
         self.year_label = QLabel("Year: 2025")
         self.year_label.setStyleSheet("font-size: 18px;")
@@ -111,7 +112,7 @@ class DamageEstimator(QWidget):
         year_layout.addWidget(self.year_slider)
         controls_layout.addLayout(year_layout)
 
-        # Hurricane category dropdown
+        # Hurricane category dropdown (existing code)
         hurricane_layout = QHBoxLayout()
         hurricane_label = QLabel("Hurricane Category:")
         hurricane_label.setStyleSheet("font-size: 18px;")
@@ -122,7 +123,7 @@ class DamageEstimator(QWidget):
         hurricane_layout.addWidget(self.hurricane_combo)
         controls_layout.addLayout(hurricane_layout)
 
-        # Property value input
+        # Property value input (existing code)
         value_layout = QHBoxLayout()
         value_label = QLabel("Total Property Value ($):")
         value_label.setStyleSheet("font-size: 18px;")
@@ -132,11 +133,12 @@ class DamageEstimator(QWidget):
         value_layout.addWidget(self.property_value_input)
         controls_layout.addLayout(value_layout)
 
-        # Building distribution controls
+        # Building distribution controls (existing code)
         buildings_group = QGroupBox("Building Types")
+        buildings_group.setStyleSheet("QGroupBox { font-size: 16px; }")
         buildings_layout = QVBoxLayout()
 
-        # Create sliders for building type distribution
+        # Create sliders for building type distribution (existing code)
         self.building_sliders = {}
         building_types = {
             "Residential": 65,
@@ -152,7 +154,6 @@ class DamageEstimator(QWidget):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(0, 100)
             slider.setValue(default_pct)
-            # Use a lambda that stores current values to avoid late binding issues
             slider.valueChanged.connect(lambda val, lbl=label, bt=btype: self.update_building_label(val, lbl, bt))
             slider_layout.addWidget(label)
             slider_layout.addWidget(slider)
@@ -173,27 +174,41 @@ class DamageEstimator(QWidget):
         analyze_button.clicked.connect(self.analyze_damage)
         self.property_layout.addWidget(analyze_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        # Results display
-        results_frame = QFrame()
-        results_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        results_frame.setStyleSheet("background-color: white;")
-        results_layout = QVBoxLayout()
+        # ---- SEPARATE RESULTS SECTIONS ----
+
+        # 1. Table Results Section
+        table_section = QGroupBox("Damage Breakdown")
+        table_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
+        table_layout = QVBoxLayout()
 
         # Table for damage breakdown
         self.results_table = QTableWidget()
-        self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # Make table read-only
+        self.results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.results_table.setColumnCount(4)
         self.results_table.setHorizontalHeaderLabels(["Damage Category", "Amount ($)", "% of Total", "Notes"])
+        self.results_table.setColumnWidth(0, 200)  # Damage Category column
+        self.results_table.setColumnWidth(1, 150)  # Amount column
+        self.results_table.setColumnWidth(2, 150)  # % of Total column
         self.results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        results_layout.addWidget(self.results_table)
+        self.results_table.setRowCount(0)  # Start with no rows
+        self.results_table.setMinimumHeight(75)
+
+        table_layout.addWidget(self.results_table)
+        table_section.setLayout(table_layout)
+        self.property_layout.addWidget(table_section)
+
+        # 2. Chart Results Section
+        chart_section = QGroupBox("Damage Visualization")
+        chart_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
+        chart_layout = QVBoxLayout()
 
         # Chart for visualization
         self.figure = Figure(figsize=(10, 6))
         self.canvas = FigureCanvas(self.figure)
-        results_layout.addWidget(self.canvas)
+        chart_layout.addWidget(self.canvas)
 
-        results_frame.setLayout(results_layout)
-        self.property_layout.addWidget(results_frame)
+        chart_section.setLayout(chart_layout)
+        self.property_layout.addWidget(chart_section)
 
         # Download button
         download_button = QPushButton("Export Results")
@@ -205,11 +220,11 @@ class DamageEstimator(QWidget):
     def setup_economic_tab(self):
         """Set up the economic impact analysis tab"""
 
-        # Economic impact controls
+        # Economic impact controls (existing code)
         controls_group = QGroupBox("Economic Impact Parameters")
         controls_layout = QVBoxLayout()
 
-        # Recovery period
+        # Recovery period (existing code)
         recovery_layout = QHBoxLayout()
         recovery_label = QLabel("Recovery Period (months):")
         recovery_label.setStyleSheet("font-size: 18px;")
@@ -221,11 +236,11 @@ class DamageEstimator(QWidget):
         recovery_layout.addWidget(self.recovery_spinner)
         controls_layout.addLayout(recovery_layout)
 
-        # Economic impacts to include
+        # Economic impacts to include (existing code)
         impacts_group = QGroupBox("Impact Categories")
         impacts_layout = QVBoxLayout()
 
-        # Economic impact categories with default values
+        # Economic impact categories with default values (existing code)
         self.impact_sliders = {}
         impact_categories = {
             "Business Interruption": 30,
@@ -242,7 +257,6 @@ class DamageEstimator(QWidget):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(0, 100)
             slider.setValue(default_pct)
-            # Use a lambda that stores current values to avoid late binding issues
             slider.valueChanged.connect(lambda val, lbl=label, ic=impact: self.update_impact_label(val, lbl, ic))
             slider_layout.addWidget(label)
             slider_layout.addWidget(slider)
@@ -263,28 +277,40 @@ class DamageEstimator(QWidget):
         economic_analyze_button.clicked.connect(self.analyze_economic_impact)
         self.economic_layout.addWidget(economic_analyze_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        # Results display
-        economic_results_frame = QFrame()
-        economic_results_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        economic_results_frame.setStyleSheet("background-color: white;")
-        economic_results_layout = QVBoxLayout()
+        # ---- SEPARATE RESULTS SECTIONS ----
+
+        # 1. Table Results Section
+        economic_table_section = QGroupBox("Economic Impact Breakdown")
+        economic_table_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
+        economic_table_layout = QVBoxLayout()
 
         # Table for economic impact breakdown
         self.economic_table = QTableWidget()
-        self.economic_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)  # Make table read-only
+        self.economic_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.economic_table.setColumnCount(4)
-        self.economic_table.setHorizontalHeaderLabels(
-            ["Impact Category", "Short-term ($)", "Long-term ($)", "Total ($)"])
-        self.economic_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        economic_results_layout.addWidget(self.economic_table)
+        # Set specific widths for each column
+        self.economic_table.setColumnWidth(0, 200)  # Impact Category column
+        self.economic_table.setColumnWidth(1, 150)  # Short-term column
+        self.economic_table.setColumnWidth(2, 150)  # Long-term column
+        self.economic_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.economic_table.setRowCount(0)  # Start with no rows
+
+        economic_table_layout.addWidget(self.economic_table)
+        economic_table_section.setLayout(economic_table_layout)
+        self.economic_layout.addWidget(economic_table_section)
+
+        # 2. Chart Results Section
+        economic_chart_section = QGroupBox("Economic Impact Visualization")
+        economic_chart_section.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; }")
+        economic_chart_layout = QVBoxLayout()
 
         # Chart for visualization
         self.economic_figure = Figure(figsize=(10, 6))
         self.economic_canvas = FigureCanvas(self.economic_figure)
-        economic_results_layout.addWidget(self.economic_canvas)
+        economic_chart_layout.addWidget(self.economic_canvas)
 
-        economic_results_frame.setLayout(economic_results_layout)
-        self.economic_layout.addWidget(economic_results_frame)
+        economic_chart_section.setLayout(economic_chart_layout)
+        self.economic_layout.addWidget(economic_chart_section)
 
         # Download button
         economic_download_button = QPushButton("Export Economic Analysis")
@@ -510,8 +536,9 @@ class DamageEstimator(QWidget):
                                cleanup_cost, debris_removal, relocation_cost, emergency_response,
                                total_direct, total_economic, total_cost, total_property_value):
         """Populate the results table with damage estimates"""
-        # Clear the table
+        # Clear the table and set row count
         self.results_table.clearContents()
+        self.results_table.setRowCount(10)  # We need exactly 10 rows
 
         # Set data
         data = [
@@ -539,13 +566,26 @@ class DamageEstimator(QWidget):
 
         # Format and insert data
         for row, (category, amount, percent, note) in enumerate(data):
-            self.results_table.setItem(row, 0, QTableWidgetItem(category))
-            self.results_table.setItem(row, 1, QTableWidgetItem(f"${amount:,.2f}"))
-            self.results_table.setItem(row, 2, QTableWidgetItem(f"{percent:.1f}%"))
-            self.results_table.setItem(row, 3, QTableWidgetItem(note))
+            # Create new items for each cell
+            category_item = QTableWidgetItem(category)
+            amount_item = QTableWidgetItem(f"${amount:,.2f}")
+            percent_item = QTableWidgetItem(f"{percent:.1f}%")
+            note_item = QTableWidgetItem(note)
 
-        # Resize rows to fit content
+            # Set the items in the table
+            self.results_table.setItem(row, 0, category_item)
+            self.results_table.setItem(row, 1, amount_item)
+            self.results_table.setItem(row, 2, percent_item)
+            self.results_table.setItem(row, 3, note_item)
+
+        # Make sure the final row is bold for total
+        for col in range(4):
+            if self.results_table.item(9, col):
+                self.results_table.item(9, col).setFont(QFont("Arial", weight=QFont.Weight.Bold))
+
+        # Resize rows to fit content and make sure the table refreshes
         self.results_table.resizeRowsToContents()
+        self.results_table.update()
 
     def update_damage_chart(self, building_damage, contents_damage, infrastructure_damage,
                             cleanup_cost, debris_removal, relocation_cost, emergency_response):
@@ -652,18 +692,33 @@ class DamageEstimator(QWidget):
 
     def populate_economic_table(self, economic_impacts):
         """Populate the economic impact table"""
-        # Clear the table
+        # Clear the table and set row count
         self.economic_table.clearContents()
+        self.economic_table.setRowCount(len(economic_impacts))
 
         # Populate table
         for row, (category, impacts) in enumerate(economic_impacts.items()):
-            self.economic_table.setItem(row, 0, QTableWidgetItem(category))
-            self.economic_table.setItem(row, 1, QTableWidgetItem(f"${impacts['short_term']:,.2f}"))
-            self.economic_table.setItem(row, 2, QTableWidgetItem(f"${impacts['long_term']:,.2f}"))
-            self.economic_table.setItem(row, 3, QTableWidgetItem(f"${impacts['total']:,.2f}"))
+            # Create new items for each cell
+            category_item = QTableWidgetItem(category)
+            short_term_item = QTableWidgetItem(f"${impacts['short_term']:,.2f}")
+            long_term_item = QTableWidgetItem(f"${impacts['long_term']:,.2f}")
+            total_item = QTableWidgetItem(f"${impacts['total']:,.2f}")
 
-        # Resize rows to fit content
+            # Set the items in the table
+            self.economic_table.setItem(row, 0, category_item)
+            self.economic_table.setItem(row, 1, short_term_item)
+            self.economic_table.setItem(row, 2, long_term_item)
+            self.economic_table.setItem(row, 3, total_item)
+
+            # Bold the total row
+            if category == "Total Economic Impact":
+                for col in range(4):
+                    if self.economic_table.item(row, col):
+                        self.economic_table.item(row, col).setFont(QFont("Arial", weight=QFont.Weight.Bold))
+
+        # Resize rows to fit content and make sure the table refreshes
         self.economic_table.resizeRowsToContents()
+        self.economic_table.update()
 
     def update_economic_chart(self, economic_impacts):
         """Update the economic impact visualization chart"""
