@@ -44,16 +44,12 @@ class LidarSurface(QWidget):
         self.setLayout(self.layout)
 
         # Title Label
-        self.title = QLabel("3D LiDAR Surface Model (Buildings & Vegetation)")
+        self.title = QLabel("3D LiDAR Surface Model")
         self.title.setStyleSheet("font-size: 42px; font-family: 'Roboto'; border: 2px solid black; "
                                  "border-radius: 8px; background-color: #444444; padding: 10px;")
         self.layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        # Add a subtitle explaining LiDAR
-        self.subtitle = QLabel(
-            "LiDAR captures surface features including buildings, vegetation and terrain for realistic flood modeling")
-        self.subtitle.setStyleSheet("font-size: 16px; font-style: italic; margin-top: 5px;")
-        self.layout.addWidget(self.subtitle, alignment=Qt.AlignmentFlag.AlignHCenter)
+        # Removed: Subtitle label explaining LiDAR
 
         # Matplotlib Figure
         self.figure = plt.figure(figsize=(16, 10))
@@ -138,17 +134,17 @@ class LidarSurface(QWidget):
         self.save_button.clicked.connect(self.save_3d_model)
         button_layout.addWidget(self.save_button)
 
-        # View Controls Button (adds a dropdown when clicked)
-        self.view_button = QPushButton("View Controls")
-        self.view_button.setStyleSheet("font-size: 22px; padding: 8px;")
-        self.view_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.view_button.clicked.connect(self.show_view_controls)
-        button_layout.addWidget(self.view_button)
+        # View Controls Button - removed since controls will always be visible
+        # self.view_button = QPushButton("View Controls")
+        # self.view_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        # self.view_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        # self.view_button.clicked.connect(self.show_view_controls)
+        # button_layout.addWidget(self.view_button)
 
         # Add button layout to main layout
         self.layout.addLayout(button_layout)
 
-        # Create view control panel (hidden initially)
+        # Create view control panel (always visible now)
         self.view_controls = QWidget()
         view_controls_layout = QHBoxLayout()
         self.view_controls.setLayout(view_controls_layout)
@@ -156,7 +152,8 @@ class LidarSurface(QWidget):
         # Add elevation exaggeration control
         elevation_layout = QVBoxLayout()
         elevation_label = QLabel("Elevation Exaggeration")
-        elevation_label.setStyleSheet("font-size: 14px;")
+        # Updated font size to match other labels
+        elevation_label.setStyleSheet("font-size: 22px;")
         elevation_layout.addWidget(elevation_label)
 
         self.elevation_slider = QSlider(Qt.Orientation.Horizontal)
@@ -171,24 +168,27 @@ class LidarSurface(QWidget):
         # Add view angle controls
         angle_layout = QVBoxLayout()
         angle_label = QLabel("View Angle")
-        angle_label.setStyleSheet("font-size: 14px;")
+        # Updated font size to match other labels
+        angle_label.setStyleSheet("font-size: 22px;")
         angle_layout.addWidget(angle_label)
 
         angle_buttons_layout = QHBoxLayout()
         for angle in ["Top", "Side", "Front", "Isometric"]:
             angle_button = QPushButton(angle)
-            angle_button.setStyleSheet("font-size: 14px; padding: 5px;")
+            # Made buttons bigger with more padding and larger font
+            angle_button.setStyleSheet("font-size: 18px; padding: 8px;")
+            # Added pointing hand cursor
+            angle_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             angle_button.clicked.connect(lambda checked, a=angle: self.change_view_angle(a))
             angle_buttons_layout.addWidget(angle_button)
 
         angle_layout.addLayout(angle_buttons_layout)
         view_controls_layout.addLayout(angle_layout)
 
-        # Hide view controls initially
-        self.view_controls.hide()
+        # Show view controls by default
         self.layout.addWidget(self.view_controls)
 
-        # Loading status label
+        # Loading status label - Will be hidden after operations instead of showing messages
         self.status_label = QLabel("Loading LiDAR data...")
         self.status_label.setStyleSheet("font-size: 18px; color: #444444;")
         self.layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -200,19 +200,19 @@ class LidarSurface(QWidget):
     def find_lidar_files(self):
         """Find all LiDAR .sid files in the data directory"""
         lidar_files = []
-        data_dirs = ["../Data/", "../Data/LiDAR/"]  # Try different potential locations
+        data_dir = "../Data/Dorchester_LiDAR/"
 
-        for data_dir in data_dirs:
-            if os.path.exists(data_dir):
-                for file in os.listdir(data_dir):
-                    if "Cambridge" in file and file.endswith(".sid"):
-                        lidar_files.append(os.path.join(data_dir, file))
+        if os.path.exists(data_dir):
+            for file in os.listdir(data_dir):
+                if "Cambridge" in file and file.endswith(".sid"):
+                    lidar_files.append(os.path.join(data_dir, file))
 
         # If no files found in standard directories, add sample file paths for testing
+        # Modified to remove "Cambridge_reduced_" prefix
         if not lidar_files:
             for i in range(1, 10):
-                lidar_files.append(f"Cambridge_reduced_cloud_{i}.sid")
-                lidar_files.append(f"Cambridge_reduced_dem_{i}.sid")
+                lidar_files.append(f"cloud_{i}.sid")
+                lidar_files.append(f"dem_{i}.sid")
 
         return sorted(lidar_files)
 
@@ -243,14 +243,15 @@ class LidarSurface(QWidget):
                 self.min_elev = np.nanmin(self.lidar_data)
                 self.max_elev = np.nanmax(self.lidar_data)
 
-                self.status_label.setText(
-                    f"LiDAR data loaded successfully. Elevation range: {self.min_elev:.2f} to {self.max_elev:.2f} ft")
+                # Hide status label after successful loading
+                self.status_label.hide()
 
                 # Plot the initial surface
                 self.plot_3d_lidar(flood_level=None)
 
         except Exception as e:
-            self.status_label.setText(f"Error loading LiDAR data: {str(e)}")
+            # Hide status label after error (instead of showing error message)
+            self.status_label.hide()
 
             # Generate synthetic data for demo/testing if file can't be loaded
             self.generate_synthetic_data()
@@ -328,8 +329,8 @@ class LidarSurface(QWidget):
         self.min_elev = np.min(Z)
         self.max_elev = np.max(Z)
 
-        self.status_label.setText(
-            f"Using synthetic LiDAR surface data with buildings and vegetation. Elevation range: {self.min_elev:.2f} to {self.max_elev:.2f} ft")
+        # Hide status label after generating data
+        self.status_label.hide()
 
     def update_year_label(self):
         """Update the year label as the slider changes"""
@@ -339,7 +340,7 @@ class LidarSurface(QWidget):
     def plot_3d_lidar(self, flood_level=None):
         """Plot the 3D LiDAR surface with enhanced realism for buildings and vegetation"""
         if self.lidar_data is None:
-            self.status_label.setText("No LiDAR data available to plot")
+            self.status_label.hide()
             return
 
         self.figure.clear()  # Clear previous plot
@@ -464,21 +465,7 @@ class LidarSurface(QWidget):
         legend_box.legend(legend_items, legend_text, loc='center',
                           fontsize=10, frameon=True, framealpha=0.8)
 
-        # Add elevation scale bar
-        scale_box = self.figure.add_axes([0.7, 0.05, 0.2, 0.1])  # Position at bottom right
-        scale_box.axis("off")
-
-        # Create gradient for elevation scale
-        gradient = np.linspace(0, 1, 256).reshape(1, -1)
-        gradient = np.vstack((gradient, gradient))
-
-        # Display the gradient
-        scale_box.imshow(gradient, aspect='auto', cmap='viridis')
-
-        # Add text for min and max elevations
-        scale_box.text(0, -0.1, f"{self.min_elev:.1f} ft", ha='left', va='top', fontsize=8)
-        scale_box.text(255, -0.1, f"{self.max_elev:.1f} ft", ha='right', va='top', fontsize=8)
-        scale_box.text(128, -0.1, "Elevation", ha='center', va='top', fontsize=10, fontweight='bold')
+        # Remove elevation scale bar (as requested)
 
         # If flooding, overlay a water surface with enhanced realism
         if flood_level is not None and flood_level > z_min:
@@ -548,9 +535,9 @@ class LidarSurface(QWidget):
         ax.grid(True, alpha=0.3, linestyle='--')
 
         # Title
-        title_text = f"Cambridge, MD - 3D LiDAR Surface Model (Buildings & Vegetation)"
+        title_text = f"Cambridge, MD - 3D LiDAR Surface Model"
         if flood_level is not None:
-            title_text = f"Cambridge, MD - 3D LiDAR Flood Simulation (Water Level: {flood_level:.2f} ft)"
+            title_text = f"Cambridge, MD - 3D LiDAR Surface Flood Simulation (Water Level: {flood_level:.2f} ft)"
         ax.set_title(title_text, fontsize=14, fontweight='bold')
 
         # Add info box
@@ -595,7 +582,8 @@ class LidarSurface(QWidget):
     def simulate_flooding(self):
         """Apply flooding based on year slider and hurricane category"""
         if self.lidar_data is None:
-            self.status_label.setText("Error: No LiDAR data loaded for simulation")
+            # Hide status label instead of showing error message
+            self.status_label.hide()
             return
 
         # Get simulation parameters
@@ -620,9 +608,8 @@ class LidarSurface(QWidget):
         # Make sure flood level is at least at the minimum elevation to show some effect
         flood_level = max(flood_level, self.min_elev)
 
-        # Update the status label
-        self.status_label.setText(f"Simulating flooding: Year {2025 + self.year_slider.value()}, "
-                                  f"Hurricane {hurricane_category}, Flood Level: {flood_level:.2f} feet")
+        # Hide status label instead of updating text
+        self.status_label.hide()
 
         # Apply the flood level to the terrain
         self.plot_3d_lidar(flood_level=flood_level)
@@ -631,17 +618,11 @@ class LidarSurface(QWidget):
         """Reset the model to default state without flooding"""
         self.year_slider.setValue(0)
         self.category_combo.setCurrentIndex(0)
-        self.status_label.setText("Model reset to default state")
+        # Hide status label instead of showing message
+        self.status_label.hide()
         self.plot_3d_lidar(flood_level=None)
 
-    def show_view_controls(self):
-        """Toggle visibility of view control panel"""
-        if self.view_controls.isVisible():
-            self.view_controls.hide()
-            self.view_button.setText("View Controls")
-        else:
-            self.view_controls.show()
-            self.view_button.setText("Hide Controls")
+    # Removed: show_view_controls method since controls are always visible
 
     def change_view_angle(self, angle_preset):
         """Change the view angle based on preset"""
@@ -664,7 +645,9 @@ class LidarSurface(QWidget):
                     self.canvas.draw()
                     break
 
-        self.status_label.setText(f"View changed to {angle_preset} perspective")
+        # Removed status message
+        # self.status_label.setText(f"View changed to {angle_preset} perspective")
+        self.status_label.hide()
 
     def update_3d_view(self):
         """Update the 3D view with current elevation exaggeration"""
@@ -687,7 +670,9 @@ class LidarSurface(QWidget):
                     self.canvas.draw()
                     break
 
-        self.status_label.setText(f"Elevation exaggeration set to {self.elevation_slider.value() / 10.0}x")
+        # Removed status message
+        # self.status_label.setText(f"Elevation exaggeration set to {self.elevation_slider.value() / 10.0}x")
+        self.status_label.hide()
 
     def save_3d_model(self):
         """Save the current 3D model as a PNG image"""
@@ -715,7 +700,9 @@ class LidarSurface(QWidget):
         if file_path:
             # Save the figure
             self.figure.savefig(file_path, dpi=300, bbox_inches='tight')
-            self.status_label.setText(f"Model saved as {os.path.basename(file_path)}")
+
+            # Hide status label instead of showing message
+            self.status_label.hide()
 
 
 class DamageEstimator(QWidget):
@@ -2362,7 +2349,7 @@ class Elevation(QWidget):
             os.makedirs(downloads_dir)
 
         # Define the output file path
-        file_path = os.path.join(downloads_dir, "Cambridge_Flood_Model.png")
+        file_path = os.path.join(downloads_dir, "Cambridge_DEM_Elevation_Model.png")
 
         # Save the figure
         self.figure.savefig(file_path, dpi=300)
