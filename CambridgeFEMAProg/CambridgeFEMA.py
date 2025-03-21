@@ -34,6 +34,690 @@ import numpy as np
 import pandas as pd
 
 
+class LidarSurface(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        # Layout setup
+        self.layout = QVBoxLayout()
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+        self.setLayout(self.layout)
+
+        # Title Label
+        self.title = QLabel("3D LiDAR Surface Model (Buildings & Vegetation)")
+        self.title.setStyleSheet("font-size: 42px; font-family: 'Roboto'; border: 2px solid black; "
+                                 "border-radius: 8px; background-color: #444444; padding: 10px;")
+        self.layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # Add a subtitle explaining LiDAR
+        self.subtitle = QLabel(
+            "LiDAR captures surface features including buildings, vegetation and terrain for realistic flood modeling")
+        self.subtitle.setStyleSheet("font-size: 16px; font-style: italic; margin-top: 5px;")
+        self.layout.addWidget(self.subtitle, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # Matplotlib Figure
+        self.figure = plt.figure(figsize=(16, 10))
+        self.canvas = FigureCanvas(self.figure)
+        self.layout.addWidget(self.canvas)
+
+        # Lidar data properties
+        self.lidar_data = None
+        self.current_file_index = 0
+        self.lidar_files = self.find_lidar_files()
+
+        # Controls Layout
+        controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(15)
+
+        # Year label and slider
+        self.year_label = QLabel("Year: 2025")
+        self.year_label.setStyleSheet("font-size: 22px;")
+        controls_layout.addWidget(self.year_label)
+
+        # Slider (water level factor)
+        self.year_slider = QSlider(Qt.Orientation.Horizontal)
+        self.year_slider.setRange(0, 100)
+        self.year_slider.setValue(0)
+        self.year_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.year_slider.valueChanged.connect(self.update_year_label)
+        controls_layout.addWidget(self.year_slider)
+
+        # File selection dropdown
+        file_layout = QHBoxLayout()
+        file_layout.setSpacing(5)
+        file_label = QLabel("LiDAR Data:")
+        file_label.setStyleSheet("font-size: 22px;")
+        file_layout.addWidget(file_label)
+
+        self.file_combo = QComboBox()
+        self.file_combo.addItems([os.path.basename(f) for f in self.lidar_files])
+        self.file_combo.setStyleSheet("font-size: 20px;")
+        self.file_combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.file_combo.currentIndexChanged.connect(self.change_lidar_file)
+        file_layout.addWidget(self.file_combo)
+        controls_layout.addLayout(file_layout)
+
+        # Hurricane Category (label and combo box grouped)
+        hurricane_layout = QHBoxLayout()
+        hurricane_layout.setSpacing(5)
+        hurricane_label = QLabel("Hurricane:")
+        hurricane_label.setStyleSheet("font-size: 22px;")
+        hurricane_layout.addWidget(hurricane_label)
+
+        self.category_combo = QComboBox()
+        for i in range(1, 6):
+            self.category_combo.addItem(f"Category {i}")
+        self.category_combo.setStyleSheet("font-size: 22px;")
+        self.category_combo.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        hurricane_layout.addWidget(self.category_combo)
+        controls_layout.addLayout(hurricane_layout)
+
+        # Simulation Button
+        self.simulate_button = QPushButton("Simulate Flooding")
+        self.simulate_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.simulate_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.simulate_button.clicked.connect(self.simulate_flooding)
+        controls_layout.addWidget(self.simulate_button)
+
+        self.layout.addLayout(controls_layout)
+
+        # Button Layout for additional controls
+        button_layout = QHBoxLayout()
+
+        # Reset Button
+        self.reset_button = QPushButton("Reset Model")
+        self.reset_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.reset_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.reset_button.clicked.connect(self.reset_model)
+        button_layout.addWidget(self.reset_button)
+
+        # Save Button (Export PNG)
+        self.save_button = QPushButton("Save Model as PNG")
+        self.save_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.save_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.save_button.clicked.connect(self.save_3d_model)
+        button_layout.addWidget(self.save_button)
+
+        # View Controls Button (adds a dropdown when clicked)
+        self.view_button = QPushButton("View Controls")
+        self.view_button.setStyleSheet("font-size: 22px; padding: 8px;")
+        self.view_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.view_button.clicked.connect(self.show_view_controls)
+        button_layout.addWidget(self.view_button)
+
+        # Add button layout to main layout
+        self.layout.addLayout(button_layout)
+
+        # Create view control panel (hidden initially)
+        self.view_controls = QWidget()
+        view_controls_layout = QHBoxLayout()
+        self.view_controls.setLayout(view_controls_layout)
+
+        # Add elevation exaggeration control
+        elevation_layout = QVBoxLayout()
+        elevation_label = QLabel("Elevation Exaggeration")
+        elevation_label.setStyleSheet("font-size: 14px;")
+        elevation_layout.addWidget(elevation_label)
+
+        self.elevation_slider = QSlider(Qt.Orientation.Horizontal)
+        self.elevation_slider.setRange(10, 30)  # 1x to 3x exaggeration
+        self.elevation_slider.setValue(15)  # 1.5x default
+        self.elevation_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.elevation_slider.setTickInterval(5)
+        self.elevation_slider.valueChanged.connect(lambda: self.update_3d_view())
+        elevation_layout.addWidget(self.elevation_slider)
+        view_controls_layout.addLayout(elevation_layout)
+
+        # Add view angle controls
+        angle_layout = QVBoxLayout()
+        angle_label = QLabel("View Angle")
+        angle_label.setStyleSheet("font-size: 14px;")
+        angle_layout.addWidget(angle_label)
+
+        angle_buttons_layout = QHBoxLayout()
+        for angle in ["Top", "Side", "Front", "Isometric"]:
+            angle_button = QPushButton(angle)
+            angle_button.setStyleSheet("font-size: 14px; padding: 5px;")
+            angle_button.clicked.connect(lambda checked, a=angle: self.change_view_angle(a))
+            angle_buttons_layout.addWidget(angle_button)
+
+        angle_layout.addLayout(angle_buttons_layout)
+        view_controls_layout.addLayout(angle_layout)
+
+        # Hide view controls initially
+        self.view_controls.hide()
+        self.layout.addWidget(self.view_controls)
+
+        # Loading status label
+        self.status_label = QLabel("Loading LiDAR data...")
+        self.status_label.setStyleSheet("font-size: 18px; color: #444444;")
+        self.layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        # Load initial data
+        QApplication.processEvents()  # Ensure UI updates before potentially long loading process
+        self.load_lidar_data()
+
+    def find_lidar_files(self):
+        """Find all LiDAR .sid files in the data directory"""
+        lidar_files = []
+        data_dirs = ["../Data/", "../Data/LiDAR/"]  # Try different potential locations
+
+        for data_dir in data_dirs:
+            if os.path.exists(data_dir):
+                for file in os.listdir(data_dir):
+                    if "Cambridge" in file and file.endswith(".sid"):
+                        lidar_files.append(os.path.join(data_dir, file))
+
+        # If no files found in standard directories, add sample file paths for testing
+        if not lidar_files:
+            for i in range(1, 10):
+                lidar_files.append(f"Cambridge_reduced_cloud_{i}.sid")
+                lidar_files.append(f"Cambridge_reduced_dem_{i}.sid")
+
+        return sorted(lidar_files)
+
+    def change_lidar_file(self, index):
+        """Change LiDAR file when user selects a different one from the dropdown"""
+        if 0 <= index < len(self.lidar_files):
+            self.current_file_index = index
+            self.load_lidar_data()
+
+    def load_lidar_data(self):
+        """Load LiDAR data from selected file"""
+        self.status_label.setText(
+            f"Loading LiDAR data from {os.path.basename(self.lidar_files[self.current_file_index])}...")
+        QApplication.processEvents()  # Update UI
+
+        try:
+            # Attempt to open the file with rasterio
+            with rasterio.open(self.lidar_files[self.current_file_index]) as dataset:
+                # Extract the data
+                self.lidar_data = dataset.read(1)
+
+                # Replace NoData values with NaN
+                nodata_value = dataset.nodata
+                if nodata_value is not None:
+                    self.lidar_data[self.lidar_data == nodata_value] = np.nan
+
+                # Get min/max for display
+                self.min_elev = np.nanmin(self.lidar_data)
+                self.max_elev = np.nanmax(self.lidar_data)
+
+                self.status_label.setText(
+                    f"LiDAR data loaded successfully. Elevation range: {self.min_elev:.2f} to {self.max_elev:.2f} ft")
+
+                # Plot the initial surface
+                self.plot_3d_lidar(flood_level=None)
+
+        except Exception as e:
+            self.status_label.setText(f"Error loading LiDAR data: {str(e)}")
+
+            # Generate synthetic data for demo/testing if file can't be loaded
+            self.generate_synthetic_data()
+            self.plot_3d_lidar(flood_level=None)
+
+    def generate_synthetic_data(self):
+        """Generate synthetic data including terrain, buildings and vegetation for demonstration"""
+        # Create a grid
+        x = np.linspace(0, 100, 100)
+        y = np.linspace(0, 100, 100)
+        X, Y = np.meshgrid(x, y)
+
+        # Create a terrain-like surface using sine functions for the base terrain
+        Z = 3 * np.sin(X / 10) * np.cos(Y / 10) + np.random.rand(100, 100) * 0.5
+
+        # Add a few hills and depressions to the terrain
+        for _ in range(5):
+            cx, cy = np.random.randint(0, 100, 2)
+            r = np.random.randint(10, 30)
+            height = np.random.uniform(1, 3)
+            mask = ((X - cx) ** 2 + (Y - cy) ** 2) < r ** 2
+            Z[mask] += height * np.exp(-((X[mask] - cx) ** 2 + (Y[mask] - cy) ** 2) / (r ** 2))
+
+        # Add buildings (rectangular blocks)
+        for _ in range(30):  # Add 30 buildings
+            # Random building location and size
+            bx = np.random.randint(10, 90)
+            by = np.random.randint(10, 90)
+            width = np.random.randint(3, 8)
+            length = np.random.randint(3, 8)
+            height = np.random.uniform(5, 15)  # Taller than terrain features
+
+            # Create building mask
+            b_mask = (np.abs(X - bx) < width / 2) & (np.abs(Y - by) < length / 2)
+
+            # Add building with flat top at its maximum height
+            if np.any(b_mask):
+                base_height = np.max(Z[b_mask])  # Get the terrain height at building location
+                Z[b_mask] = base_height + height  # Set building height
+
+        # Add vegetation (trees and bushes)
+        for _ in range(100):  # Add 100 vegetation elements
+            vx = np.random.randint(5, 95)
+            vy = np.random.randint(5, 95)
+
+            # Vegetation size and height
+            size = np.random.randint(1, 4)  # Size of vegetation (1=bush, 2-3=small tree, 4=large tree)
+            v_height = np.random.uniform(1, 8) * size / 2  # Height based on size
+
+            # Create vegetation mask (circular)
+            radius = size
+            v_mask = ((X - vx) ** 2 + (Y - vy) ** 2) < radius ** 2
+
+            # Only add vegetation if it's not on a building
+            if np.any(v_mask):
+                # Get current heights
+                current_heights = Z[v_mask]
+                # Only modify points that aren't already buildings (assuming buildings are higher)
+                terrain_mask = current_heights < np.mean(Z) + 5
+                if np.any(terrain_mask):
+                    # Get terrain mask for vegetation area
+                    combined_mask = np.zeros_like(Z, dtype=bool)
+                    combined_mask[v_mask] = terrain_mask
+
+                    # Add vegetation with conical shape (higher in center)
+                    center_dist = np.sqrt((X[combined_mask] - vx) ** 2 + (Y[combined_mask] - vy) ** 2)
+                    max_dist = np.max(center_dist)
+                    if max_dist > 0:
+                        # Calculate height factor (1 at center, 0 at edge)
+                        height_factor = (1 - center_dist / max_dist)
+                        base_heights = Z[combined_mask]  # Get terrain heights
+                        Z[combined_mask] = base_heights + v_height * height_factor  # Add vegetation
+
+        self.lidar_data = Z
+        self.min_elev = np.min(Z)
+        self.max_elev = np.max(Z)
+
+        self.status_label.setText(
+            f"Using synthetic LiDAR surface data with buildings and vegetation. Elevation range: {self.min_elev:.2f} to {self.max_elev:.2f} ft")
+
+    def update_year_label(self):
+        """Update the year label as the slider changes"""
+        year = self.year_slider.value() + 2025
+        self.year_label.setText(f"Year: {year}")
+
+    def plot_3d_lidar(self, flood_level=None):
+        """Plot the 3D LiDAR surface with enhanced realism for buildings and vegetation"""
+        if self.lidar_data is None:
+            self.status_label.setText("No LiDAR data available to plot")
+            return
+
+        self.figure.clear()  # Clear previous plot
+        ax = self.figure.add_subplot(111, projection='3d')
+
+        # Create X, Y grid
+        height, width = self.lidar_data.shape
+        x = np.linspace(0, width, width)
+        y = np.linspace(0, height, height)
+        X, Y = np.meshgrid(x, y)
+
+        # Adaptive downsampling based on data complexity
+        # Less downsampling for areas with high variation (buildings, trees)
+        gradient_x = np.gradient(self.lidar_data, axis=0)
+        gradient_y = np.gradient(self.lidar_data, axis=1)
+        gradient_magnitude = np.sqrt(gradient_x ** 2 + gradient_y ** 2)
+
+        # Base downsample factor (higher for better performance)
+        base_downsample = 3
+
+        # For complex areas (buildings, vegetation with high gradient)
+        high_detail_mask = gradient_magnitude > np.percentile(gradient_magnitude, 70)
+
+        # Separate terrain, vegetation and buildings based on height and gradient
+        height_percentiles = np.percentile(self.lidar_data, [30, 70, 90])
+        terrain_mask = self.lidar_data < height_percentiles[0]
+        vegetation_mask = (self.lidar_data >= height_percentiles[0]) & (self.lidar_data < height_percentiles[2])
+        building_mask = self.lidar_data >= height_percentiles[2]
+
+        # Ensure z-axis has proper range
+        z_min = self.min_elev
+        z_max = self.max_elev
+        if flood_level is not None:
+            z_max = max(z_max, flood_level)
+
+        ax.set_zlim(z_min, z_max)
+
+        # Enhanced rendering approach - split by feature type for better visualization
+
+        # 1. Plot base terrain with earthy colormap
+        X_terrain = X[::base_downsample, ::base_downsample]
+        Y_terrain = Y[::base_downsample, ::base_downsample]
+        Z_terrain = self.lidar_data[::base_downsample, ::base_downsample]
+
+        # Create mask for downsampled terrain
+        terrain_ds_mask = terrain_mask[::base_downsample, ::base_downsample]
+
+        # Create masked arrays for terrain
+        X_terrain_masked = np.ma.masked_array(X_terrain, ~terrain_ds_mask)
+        Y_terrain_masked = np.ma.masked_array(Y_terrain, ~terrain_ds_mask)
+        Z_terrain_masked = np.ma.masked_array(Z_terrain, ~terrain_ds_mask)
+
+        # Plot terrain with specific style
+        terrain_plot = ax.plot_surface(X_terrain_masked, Y_terrain_masked, Z_terrain_masked,
+                                       cmap="YlOrBr", alpha=0.9, shade=True,
+                                       rstride=1, cstride=1, linewidth=0,
+                                       vmin=z_min, vmax=z_max)
+
+        # 2. Plot vegetation with green colormap and less downsampling for details
+        veg_downsample = max(1, base_downsample - 1)  # Less downsampling for vegetation
+        X_veg = X[::veg_downsample, ::veg_downsample]
+        Y_veg = Y[::veg_downsample, ::veg_downsample]
+        Z_veg = self.lidar_data[::veg_downsample, ::veg_downsample]
+
+        # Create mask for downsampled vegetation
+        veg_ds_mask = vegetation_mask[::veg_downsample, ::veg_downsample]
+
+        # Create masked arrays for vegetation
+        X_veg_masked = np.ma.masked_array(X_veg, ~veg_ds_mask)
+        Y_veg_masked = np.ma.masked_array(Y_veg, ~veg_ds_mask)
+        Z_veg_masked = np.ma.masked_array(Z_veg, ~veg_ds_mask)
+
+        # Plot vegetation with specific style
+        veg_plot = ax.plot_surface(X_veg_masked, Y_veg_masked, Z_veg_masked,
+                                   cmap="Greens", alpha=0.9, shade=True,
+                                   rstride=1, cstride=1, linewidth=0,
+                                   vmin=z_min, vmax=z_max)
+
+        # 3. Plot buildings with minimal downsampling for sharp edges
+        building_downsample = max(1, base_downsample - 2)  # Minimal downsampling for buildings
+        X_building = X[::building_downsample, ::building_downsample]
+        Y_building = Y[::building_downsample, ::building_downsample]
+        Z_building = self.lidar_data[::building_downsample, ::building_downsample]
+
+        # Create mask for downsampled buildings
+        building_ds_mask = building_mask[::building_downsample, ::building_downsample]
+
+        # Create masked arrays for buildings
+        X_building_masked = np.ma.masked_array(X_building, ~building_ds_mask)
+        Y_building_masked = np.ma.masked_array(Y_building, ~building_ds_mask)
+        Z_building_masked = np.ma.masked_array(Z_building, ~building_ds_mask)
+
+        # Plot buildings with specific style (grayscale for urban appearance)
+        building_plot = ax.plot_surface(X_building_masked, Y_building_masked, Z_building_masked,
+                                        cmap="Greys", alpha=0.95, shade=True,
+                                        rstride=1, cstride=1, linewidth=0,
+                                        vmin=z_min, vmax=z_max)
+
+        # For color legend, use the terrain plot as reference
+        terrain = terrain_plot
+
+        # Create a custom legend instead of using the colorbar
+        # This provides better visual explanation of the different features
+        legend_box = self.figure.add_axes([0.7, 0.15, 0.2, 0.2])  # Position at bottom right
+        legend_box.axis("off")
+
+        # Create colored patches for different elements
+        legend_items = [
+            plt.Rectangle((0, 0), 1, 1, fc='#555555', ec='black', alpha=0.9),  # Buildings (gray)
+            plt.Rectangle((0, 0), 1, 1, fc='#2ca02c', ec='black', alpha=0.9),  # Vegetation (green)
+            plt.Rectangle((0, 0), 1, 1, fc='#d8b365', ec='black', alpha=0.9),  # Terrain (tan)
+        ]
+
+        # Add water to legend if flooding is active
+        if flood_level is not None:
+            legend_items.append(plt.Rectangle((0, 0), 1, 1, fc='#5EB1FF', ec='black', alpha=0.7))
+            legend_text = ['Buildings', 'Vegetation', 'Terrain', 'Flood Water']
+        else:
+            legend_text = ['Buildings', 'Vegetation', 'Terrain']
+
+        # Add the legend
+        legend_box.legend(legend_items, legend_text, loc='center',
+                          fontsize=10, frameon=True, framealpha=0.8)
+
+        # Add elevation scale bar
+        scale_box = self.figure.add_axes([0.7, 0.05, 0.2, 0.1])  # Position at bottom right
+        scale_box.axis("off")
+
+        # Create gradient for elevation scale
+        gradient = np.linspace(0, 1, 256).reshape(1, -1)
+        gradient = np.vstack((gradient, gradient))
+
+        # Display the gradient
+        scale_box.imshow(gradient, aspect='auto', cmap='viridis')
+
+        # Add text for min and max elevations
+        scale_box.text(0, -0.1, f"{self.min_elev:.1f} ft", ha='left', va='top', fontsize=8)
+        scale_box.text(255, -0.1, f"{self.max_elev:.1f} ft", ha='right', va='top', fontsize=8)
+        scale_box.text(128, -0.1, "Elevation", ha='center', va='top', fontsize=10, fontweight='bold')
+
+        # If flooding, overlay a water surface with enhanced realism
+        if flood_level is not None and flood_level > z_min:
+            # Use the maximum downsampling for water (for performance)
+            water_downsample = base_downsample
+            X_water = X[::water_downsample, ::water_downsample]
+            Y_water = Y[::water_downsample, ::water_downsample]
+
+            # Create a water surface mesh
+            water_surface = np.ones_like(self.lidar_data[::water_downsample, ::water_downsample]) * flood_level
+
+            # Find areas where terrain is below flood level
+            flood_mask = self.lidar_data[::water_downsample, ::water_downsample] < flood_level
+
+            # Create masked arrays to plot only flooded areas
+            water_X = np.ma.masked_array(X_water, ~flood_mask)
+            water_Y = np.ma.masked_array(Y_water, ~flood_mask)
+            water_Z = np.ma.masked_array(water_surface, ~flood_mask)
+
+            # Plot water surface with enhanced appearance
+            water = ax.plot_surface(water_X, water_Y, water_Z,
+                                    color='#5EB1FF',  # Light blue for better water appearance
+                                    alpha=0.6,
+                                    linewidth=0,
+                                    edgecolor='none',
+                                    shade=True)
+
+            # Add water edge effect (for more realism where water meets land)
+            # Find the boundary of the flood
+            flood_boundary = np.zeros_like(flood_mask)
+            x_max, y_max = flood_mask.shape
+
+            # Simple boundary detection
+            for x in range(1, x_max - 1):
+                for y in range(1, y_max - 1):
+                    if flood_mask[x, y] and not all([
+                        flood_mask[x - 1, y],
+                        flood_mask[x + 1, y],
+                        flood_mask[x, y - 1],
+                        flood_mask[x, y + 1]
+                    ]):
+                        flood_boundary[x, y] = True
+
+            # Extract boundary coordinates
+            boundary_points = np.where(flood_boundary)
+            if len(boundary_points[0]) > 0:
+                X_boundary = X_water[boundary_points]
+                Y_boundary = Y_water[boundary_points]
+                Z_boundary = np.ones_like(X_boundary) * flood_level
+
+                # Plot water boundary with slightly darker blue
+                ax.scatter(X_boundary, Y_boundary, Z_boundary, color='#007ACC', s=1, alpha=0.8)
+
+        # Enhanced labels
+        ax.set_xlabel("X (Longitude Approx.)", fontsize=10, labelpad=10)
+        ax.set_ylabel("Y (Latitude Approx.)", fontsize=10, labelpad=10)
+        ax.set_zlabel("Elevation (feet)", fontsize=10, labelpad=10)
+
+        # Set optimal viewing angle
+        ax.view_init(elev=25, azim=235)  # Better angle to see structures
+
+        # Remove tick labels for cleaner look
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+
+        # Add grid for better spatial reference
+        ax.grid(True, alpha=0.3, linestyle='--')
+
+        # Title
+        title_text = f"Cambridge, MD - 3D LiDAR Surface Model (Buildings & Vegetation)"
+        if flood_level is not None:
+            title_text = f"Cambridge, MD - 3D LiDAR Flood Simulation (Water Level: {flood_level:.2f} ft)"
+        ax.set_title(title_text, fontsize=14, fontweight='bold')
+
+        # Add info box
+        left_box = self.figure.add_axes([0.16, 0.36, 0.12, 0.18])
+        left_box.axis("off")
+
+        # Add text with data metrics and feature explanation
+        left_text = f"LiDAR Data:\n{os.path.basename(self.lidar_files[self.current_file_index])}\n\n"
+        left_text += f"Elevation Range:\n{self.min_elev:.2f} to {self.max_elev:.2f} ft\n\n"
+        left_text += "Features Visible:\n• Buildings\n• Vegetation\n• Terrain"
+
+        if flood_level is not None:
+            left_text += f"\n\nWater Level:\n{flood_level:.2f} ft"
+            # Calculate flood coverage percentage
+            flood_coverage = np.sum(self.lidar_data < flood_level) / self.lidar_data.size * 100
+            left_text += f"\nFlooded Area: {flood_coverage:.1f}%"
+            # Add vulnerability metrics
+            building_threshold = np.percentile(self.lidar_data, 90)  # Assume tallest 10% are buildings
+            vegetation_threshold = np.percentile(self.lidar_data, 70)  # Assume 70-90% are vegetation
+            buildings_flooded = np.sum((self.lidar_data > building_threshold) &
+                                       (self.lidar_data < flood_level)) / np.sum(
+                self.lidar_data > building_threshold) * 100
+            vegetation_flooded = np.sum((self.lidar_data > vegetation_threshold) &
+                                        (self.lidar_data < building_threshold) &
+                                        (self.lidar_data < flood_level)) / np.sum(
+                (self.lidar_data > vegetation_threshold) &
+                (self.lidar_data < building_threshold)) * 100
+            if buildings_flooded > 0:
+                left_text += f"\nBuildings Affected: {buildings_flooded:.1f}%"
+            if vegetation_flooded > 0:
+                left_text += f"\nVegetation Affected: {vegetation_flooded:.1f}%"
+
+        left_box.text(0.5, 0.5, left_text, fontsize=10, ha='center', va='center',
+                      bbox=dict(facecolor='white', edgecolor='black', alpha=0.7))
+
+        # Keep interactive controls
+        ax.view_init(elev=30, azim=135)
+
+        # Update canvas
+        self.canvas.draw()
+
+    def simulate_flooding(self):
+        """Apply flooding based on year slider and hurricane category"""
+        if self.lidar_data is None:
+            self.status_label.setText("Error: No LiDAR data loaded for simulation")
+            return
+
+        # Get simulation parameters
+        year_factor = self.year_slider.value() / 100.0  # 0 to 1
+
+        category_text = self.category_combo.currentText().strip()
+        try:
+            hurricane_category = int(category_text.split()[1])  # Category 1-5
+        except Exception:
+            hurricane_category = 1
+
+        # Calculate sea level rise based on year (linear model)
+        terrain_range = self.max_elev - self.min_elev
+        base_water_level = self.min_elev + (year_factor * terrain_range * 0.25)
+
+        # Hurricane intensity effect (exponential impact)
+        hurricane_multiplier = 1.0 + (hurricane_category ** 1.5) * 0.1
+
+        # Calculate flood level
+        flood_level = base_water_level * hurricane_multiplier
+
+        # Make sure flood level is at least at the minimum elevation to show some effect
+        flood_level = max(flood_level, self.min_elev)
+
+        # Update the status label
+        self.status_label.setText(f"Simulating flooding: Year {2025 + self.year_slider.value()}, "
+                                  f"Hurricane {hurricane_category}, Flood Level: {flood_level:.2f} feet")
+
+        # Apply the flood level to the terrain
+        self.plot_3d_lidar(flood_level=flood_level)
+
+    def reset_model(self):
+        """Reset the model to default state without flooding"""
+        self.year_slider.setValue(0)
+        self.category_combo.setCurrentIndex(0)
+        self.status_label.setText("Model reset to default state")
+        self.plot_3d_lidar(flood_level=None)
+
+    def show_view_controls(self):
+        """Toggle visibility of view control panel"""
+        if self.view_controls.isVisible():
+            self.view_controls.hide()
+            self.view_button.setText("View Controls")
+        else:
+            self.view_controls.show()
+            self.view_button.setText("Hide Controls")
+
+    def change_view_angle(self, angle_preset):
+        """Change the view angle based on preset"""
+        if angle_preset == "Top":
+            elev, azim = 90, 0  # Directly from top
+        elif angle_preset == "Side":
+            elev, azim = 0, 180  # Side view
+        elif angle_preset == "Front":
+            elev, azim = 0, 270  # Front view
+        elif angle_preset == "Isometric":
+            elev, azim = 30, 225  # Three-quarter view
+        else:
+            return
+
+        # Get the figure's axes
+        if hasattr(self, 'figure') and self.figure.axes:
+            for ax in self.figure.axes:
+                if hasattr(ax, 'view_init'):  # Check if it's a 3D axis
+                    ax.view_init(elev=elev, azim=azim)
+                    self.canvas.draw()
+                    break
+
+        self.status_label.setText(f"View changed to {angle_preset} perspective")
+
+    def update_3d_view(self):
+        """Update the 3D view with current elevation exaggeration"""
+        # Get the current axes
+        if hasattr(self, 'figure') and self.figure.axes:
+            for ax in self.figure.axes:
+                if hasattr(ax, 'get_zlim'):  # Check if it's a 3D axis
+                    # Get current z limits
+                    z_min, z_max = ax.get_zlim()
+
+                    # Calculate new range based on exaggeration factor
+                    exaggeration = self.elevation_slider.value() / 10.0  # Convert 10-30 to 1.0-3.0
+                    z_range = self.max_elev - self.min_elev
+                    new_range = z_range * exaggeration
+
+                    # Set new limits maintaining the minimum
+                    ax.set_zlim(self.min_elev, self.min_elev + new_range)
+
+                    # Update the plot
+                    self.canvas.draw()
+                    break
+
+        self.status_label.setText(f"Elevation exaggeration set to {self.elevation_slider.value() / 10.0}x")
+
+    def save_3d_model(self):
+        """Save the current 3D model as a PNG image"""
+        # Get user's home directory
+        home_dir = os.path.expanduser("~")
+
+        # Find the Downloads folder
+        downloads_dir = os.path.join(home_dir, "Downloads")
+
+        # Ensure the Downloads folder exists
+        if not os.path.exists(downloads_dir):
+            os.makedirs(downloads_dir)
+
+        # Define the output file path
+        file_path = os.path.join(downloads_dir, "Cambridge_LiDAR_Surface_Model.png")
+
+        # Allow user to choose a different location/filename
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save LiDAR Surface Model",
+            file_path,
+            "PNG Files (*.png)"
+        )
+
+        if file_path:
+            # Save the figure
+            self.figure.savefig(file_path, dpi=300, bbox_inches='tight')
+            self.status_label.setText(f"Model saved as {os.path.basename(file_path)}")
+
+
 class DamageEstimator(QWidget):
     def __init__(self):
         super().__init__()
@@ -2014,9 +2698,10 @@ class MainApp(QMainWindow):
         flood_item = QTreeWidgetItem(["Flood Simulators"])
         street_view_item = QTreeWidgetItem(["-- Street View"])
         model_elevation_item = QTreeWidgetItem(["-- 3D Elevation"])
+        model_surface_item = QTreeWidgetItem(["-- 3D Surface"])
         interactive_map_item = QTreeWidgetItem(["-- Interactive Map"])
         # Add subcategories under Flood Simulators
-        flood_item.addChildren([street_view_item, model_elevation_item, interactive_map_item])
+        flood_item.addChildren([street_view_item, model_elevation_item, model_surface_item, interactive_map_item])
         insurance_item = QTreeWidgetItem(["Insurance Projections"])
         damage_item = QTreeWidgetItem(["Damage Estimator"])
 
@@ -2072,6 +2757,7 @@ class MainApp(QMainWindow):
             "Home": home_page,
             "-- Street View": StreetView(),
             "-- 3D Elevation": QWidget(),
+            "-- 3D Surface": LidarSurface(),
             "-- Interactive Map": InteractiveMap(),
             "Insurance Projections": InsuranceProjections(),
             "Damage Estimator": DamageEstimator()
