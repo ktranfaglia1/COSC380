@@ -2743,7 +2743,7 @@ class MainApp(QMainWindow):
         self.pages = {
             "Home": home_page,
             "-- Street View": StreetView(),
-            "-- 3D Elevation": QWidget(),
+            "-- 3D Elevation": Elevation(),
             "-- 3D Surface": LidarSurface(),
             "-- Interactive Map": InteractiveMap(),
             "Insurance Projections": InsuranceProjections(),
