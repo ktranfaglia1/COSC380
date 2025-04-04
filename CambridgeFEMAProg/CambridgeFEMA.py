@@ -1371,11 +1371,22 @@ class DamageEstimator(QWidget):
         ax2 = self.figure.add_subplot(122)
         y_pos = np.arange(len(labels))
 
-        ax2.barh(y_pos, sizes, align='center')
+        # Convert values to hundred thousands for display
+        sizes_in_hundred_thousands = [size / 100000 for size in sizes]
+
+        bars = ax2.barh(y_pos, sizes_in_hundred_thousands, align='center')
         ax2.set_yticks(y_pos)
         ax2.set_yticklabels(labels)
-        ax2.set_xlabel('Damage Amount ($)')
+        ax2.set_xlabel('Damage Amount ($ in Hundred Thousands)')
         ax2.set_title('Damage Category Comparison')
+
+        # Add value labels to the end of each bar
+        for i, bar in enumerate(bars):
+            width = bar.get_width()
+            # Format the value in hundred thousands with a dollar sign and commas
+            value_text = f'${sizes_in_hundred_thousands[i]:,.1f}'
+            ax2.text(width + 0.1, bar.get_y() + bar.get_height() / 2,
+                     value_text, ha='left', va='center', fontsize=9)
 
         # Format x-axis as currency
         ax2.xaxis.set_major_formatter('${x:,.0f}')
@@ -1502,29 +1513,50 @@ class DamageEstimator(QWidget):
         categories = [cat for cat in economic_impacts.keys() if cat != "Total Economic Impact"]
         short_term_values = [economic_impacts[cat]["short_term"] for cat in categories]
         long_term_values = [economic_impacts[cat]["long_term"] for cat in categories]
+        total_values = [short_term_values[i] + long_term_values[i] for i in range(len(categories))]
 
         # Create stacked bar chart
         x = np.arange(len(categories))
         width = 0.8
 
-        ax1.bar(x, short_term_values, width, label='Short-term Impact')
-        ax1.bar(x, long_term_values, width, bottom=short_term_values, label='Long-term Impact')
+        # Convert to hundred thousands for better display
+        short_term_hundred_k = [val / 100000 for val in short_term_values]
+        long_term_hundred_k = [val / 100000 for val in long_term_values]
+        total_hundred_k = [val / 100000 for val in total_values]
+
+        # Create the stacked bars
+        short_term_bars = ax1.bar(x, short_term_hundred_k, width, label='Short-term Impact')
+        long_term_bars = ax1.bar(x, long_term_hundred_k, width, bottom=short_term_hundred_k, label='Long-term Impact')
 
         # Add labels and title
-        ax1.set_ylabel('Economic Impact ($)')
+        ax1.set_ylabel('Economic Impact ($ in Hundred Thousands)')
         ax1.set_title('Economic Impact by Category')
         ax1.set_xticks(x)
         ax1.set_xticklabels(categories, rotation=30, ha='right')
         ax1.legend()
 
-        # Format y-axis as currency
-        ax1.yaxis.set_major_formatter('${x:,.0f}')
+        # Add value labels to the bars
+        for i, (short_bar, long_bar) in enumerate(zip(short_term_bars, long_term_bars)):
+            # Short-term value label (at the middle of its portion)
+            if short_term_hundred_k[i] > 0:
+                height = short_bar.get_height()
+                ax1.text(i, height / 2, f'${short_term_hundred_k[i]:,.1f}',
+                         ha='center', va='center', fontsize=8, color='white', fontweight='bold')
+
+            # Long-term value label (if it exists, at the middle of its portion)
+            if long_term_hundred_k[i] > 0:
+                height = long_bar.get_height()
+                ypos = short_term_hundred_k[i] + height / 2
+                ax1.text(i, ypos, f'${long_term_hundred_k[i]:,.1f}',
+                         ha='center', va='center', fontsize=8, color='white', fontweight='bold')
+
+            # Total value label at the top
+            total_height = short_term_hundred_k[i] + long_term_hundred_k[i]
+            ax1.text(i, total_height + 0.5, f'${total_hundred_k[i]:,.1f}',
+                     ha='center', va='bottom', fontsize=9)
 
         # Create pie chart for total impact distribution
         ax2 = self.economic_figure.add_subplot(122)
-
-        # Prepare data for pie chart (only using total values, excluding the total row)
-        total_values = [economic_impacts[cat]["total"] for cat in categories]
 
         # Create pie chart
         ax2.pie(total_values, labels=categories, autopct='%1.1f%%', startangle=90)
@@ -2212,19 +2244,26 @@ class Elevation(QWidget):
         year = self.year_slider.value() + 2025
         self.year_label.setText(f"Year: {year}")
 
-    # Generate an interactive 3D elevation plot with a color legend and info box
     def plot_3d_terrain(self, flood_level=None):
+        """Generate an interactive 3D elevation plot with a color legend and info box"""
         if self.base_elevation is None:
             return
 
         self.figure.clear()  # Clear previous plot
         ax = self.figure.add_subplot(111, projection='3d')
 
-        # Create X, Y grid
+        # Create X, Y grid with proper coordinates for Cambridge, MD
         height, width = self.base_elevation.shape
-        x = np.linspace(0, width, width)
-        y = np.linspace(0, height, height)
-        X, Y = np.meshgrid(x, y)
+
+        # Define approximate lat/lon bounds for Cambridge, MD
+        # These coordinates define the bounding box for Cambridge
+        lat_min, lat_max = 38.53, 38.61  # Latitude range for Cambridge
+        lon_min, lon_max = -76.13, -76.04  # Longitude range for Cambridge
+
+        # Create coordinate grids that map to real-world coordinates
+        lon_coords = np.linspace(lon_min, lon_max, width)
+        lat_coords = np.linspace(lat_min, lat_max, height)
+        X, Y = np.meshgrid(lon_coords, lat_coords)
 
         # Start with base elevation
         elevation = np.copy(self.base_elevation)
@@ -2261,18 +2300,22 @@ class Elevation(QWidget):
             # Plot water surface
             water = ax.plot_surface(water_X, water_Y, water_Z, color='blue', alpha=0.5, edgecolor='none')
 
-        # Labels
-        ax.set_xlabel("X (Longitude Approx.)")
-        ax.set_ylabel("Y (Latitude Approx.)")
+        # Labels with more accurate coordinate descriptions
+        ax.set_xlabel("Longitude (°W)")
+        ax.set_ylabel("Latitude (°N)")
         ax.set_zlabel("Elevation (feet)")
 
-        # **Keep the title intact**
+        # Format axes with degree symbols
+        ax.xaxis.set_major_formatter(lambda x, pos: f"{abs(x):.2f}°W")
+        ax.yaxis.set_major_formatter(lambda y, pos: f"{y:.2f}°N")
+
+        # Keep the title intact
         title_text = f"Cambridge, MD - 3D Elevation Model"
         if flood_level is not None:
             title_text = f"Cambridge, MD - 3D Flood Simulation (Water Level: {flood_level:.2f} ft)"
         ax.set_title(title_text, fontsize=14, fontweight='bold')
 
-        # **Place elevation info box on the left to mirror the color legend**
+        # Place elevation info box on the left to mirror the color legend
         left_box = self.figure.add_axes([0.16, 0.36, 0.12, 0.16])  # Left side placement
         left_box.axis("off")  # Hide axis
 
@@ -2280,6 +2323,9 @@ class Elevation(QWidget):
         left_text = f"Elevation Range:\n{min_elev:.2f} to {max_elev:.2f} ft"
         if flood_level is not None:
             left_text += f"\nCurrent Water Level:\n{flood_level:.2f} ft"
+
+        # Add coordinate range info
+        left_text += f"\n\nLocation:\nCambridge, MD\n{lat_min:.2f}°N to {lat_max:.2f}°N\n{abs(lon_min):.2f}°W to {abs(lon_max):.2f}°W"
 
         left_box.text(0.5, 0.5, left_text, fontsize=10, ha='center', va='center',
                       bbox=dict(facecolor='white', edgecolor='black', alpha=0.7))
