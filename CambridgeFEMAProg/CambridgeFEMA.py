@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QMessageBox, QTabWidget, QGroupBox,
     QSpinBox, QHeaderView, QScrollArea
 )
-from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPixmap, QCursor, QFont
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -49,8 +49,6 @@ class LidarSurface(QWidget):
         self.title.setStyleSheet("font-size: 42px; font-family: 'Roboto'; border: 2px solid black; "
                                  "border-radius: 8px; background-color: #444444; padding: 10px;")
         self.layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        # Removed: Subtitle label explaining LiDAR
 
         # Matplotlib Figure
         self.figure = plt.figure(figsize=(16, 10))
@@ -134,13 +132,6 @@ class LidarSurface(QWidget):
         self.save_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.save_button.clicked.connect(self.save_3d_model)
         button_layout.addWidget(self.save_button)
-
-        # View Controls Button - removed since controls will always be visible
-        # self.view_button = QPushButton("View Controls")
-        # self.view_button.setStyleSheet("font-size: 22px; padding: 8px;")
-        # self.view_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        # self.view_button.clicked.connect(self.show_view_controls)
-        # button_layout.addWidget(self.view_button)
 
         # Add button layout to main layout
         self.layout.addLayout(button_layout)
@@ -357,13 +348,9 @@ class LidarSurface(QWidget):
         # Less downsampling for areas with high variation (buildings, trees)
         gradient_x = np.gradient(self.lidar_data, axis=0)
         gradient_y = np.gradient(self.lidar_data, axis=1)
-        gradient_magnitude = np.sqrt(gradient_x ** 2 + gradient_y ** 2)
 
         # Base downsample factor (higher for better performance)
         base_downsample = 3
-
-        # For complex areas (buildings, vegetation with high gradient)
-        high_detail_mask = gradient_magnitude > np.percentile(gradient_magnitude, 70)
 
         # Separate terrain, vegetation and buildings based on height and gradient
         height_percentiles = np.percentile(self.lidar_data, [30, 70, 90])
@@ -623,8 +610,6 @@ class LidarSurface(QWidget):
         self.status_label.hide()
         self.plot_3d_lidar(flood_level=None)
 
-    # Removed: show_view_controls method since controls are always visible
-
     def change_view_angle(self, angle_preset):
         """Change the view angle based on preset"""
         if angle_preset == "Top":
@@ -646,7 +631,6 @@ class LidarSurface(QWidget):
                     self.canvas.draw()
                     break
 
-        # Removed status message
         # self.status_label.setText(f"View changed to {angle_preset} perspective")
         self.status_label.hide()
 
@@ -671,7 +655,6 @@ class LidarSurface(QWidget):
                     self.canvas.draw()
                     break
 
-        # Removed status message
         # self.status_label.setText(f"Elevation exaggeration set to {self.elevation_slider.value() / 10.0}x")
         self.status_label.hide()
 
@@ -2132,21 +2115,15 @@ class Elevation(QWidget):
         self.layout.addWidget(self.title, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         # Loading message
-        self.loading_label = QLabel("Click 'Load Model' to generate the elevation model")
+        self.loading_label = QLabel("Loading elevation data... Please wait.")
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_label.setStyleSheet("font-size: 24px; color: #444444; margin: 40px;")
+        self.loading_label.setStyleSheet("font-size: 28px; color: #444444; margin: 60px;")
         self.layout.addWidget(self.loading_label)
 
-        # Load Model Button
-        self.load_button = QPushButton("Load Model")
-        self.load_button.setStyleSheet("font-size: 22px; padding: 8px;")
-        self.load_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self.load_button.clicked.connect(self.initialize_model)
-        self.layout.addWidget(self.load_button, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        # Matplotlib Figure - initially hidden
-        self.figure = plt.figure(figsize=(16, 10))
+        # Matplotlib Figure - initially hidden, with larger size
+        self.figure = plt.figure(figsize=(32, 24))
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setMinimumHeight(600)
         self.canvas.hide()  # Hide until data is loaded
         self.layout.addWidget(self.canvas)
 
@@ -2221,15 +2198,13 @@ class Elevation(QWidget):
         self.cache_file = os.path.join(os.path.expanduser("~"), ".cambridge_dem_cache.pkl")
         self.data_thread = None
 
-    def initialize_model(self):
-        """Start loading the model data when requested"""
+        # Start loading data automatically on widget creation
+        QTimer.singleShot(100, self.load_data)
+
+    def load_data(self):
+        """Start loading the model data automatically"""
         if self.data_loaded:
             return
-
-        # Update UI to show loading state
-        self.loading_label.setText("Loading elevation data... Please wait.")
-        self.load_button.setEnabled(False)
-        QApplication.processEvents()  # Force UI update
 
         # Create and start the loading thread
         self.data_thread = DataLoadingThread(self.cache_file)
@@ -2246,7 +2221,6 @@ class Elevation(QWidget):
 
             # Update UI to show model is ready
             self.loading_label.hide()
-            self.load_button.hide()
             self.canvas.show()
             self.controls_widget.show()
             self.buttons_widget.show()
@@ -2255,8 +2229,9 @@ class Elevation(QWidget):
             self.plot_3d_terrain(flood_level=None)
         else:
             # Handle loading failure
-            self.loading_label.setText("Failed to load elevation data. Please try again.")
-            self.load_button.setEnabled(True)
+            self.loading_label.setText("Failed to load elevation data. Please check data path and permissions.")
+            # Make the error message prominent
+            self.loading_label.setStyleSheet("font-size: 28px; color: #C00000; margin: 60px;")
 
     # Update the year label as the slider changes
     def update_year_label(self):
@@ -2503,29 +2478,7 @@ class DataLoadingThread(QThread):
 
         except Exception as e:
             print(f"Error loading DEM data: {e}")
-            # If there's an error, generate synthetic data
-            self.generate_synthetic_data()
-
-    def generate_synthetic_data(self):
-        """Generate synthetic DEM data when the real data can't be loaded"""
-        print("Generating synthetic DEM data")
-        # Create a 200x200 synthetic terrain using sine functions and random noise
-        x = np.linspace(0, 10, 200)
-        y = np.linspace(0, 10, 200)
-        X, Y = np.meshgrid(x, y)
-
-        # Base terrain with some hills and valleys
-        Z = (np.sin(X) * np.cos(Y) +
-             np.sin(2 * X) * np.cos(2 * Y) / 2 +
-             np.sin(3 * X) * np.cos(3 * Y) / 3)
-
-        # Add some random noise for realistic terrain
-        Z += np.random.rand(200, 200) * 0.2
-
-        # Scale to the appropriate elevation range for Cambridge
-        Z = (Z - Z.min()) * 12 - 0.82  # Scale to range from -0.82 to ~11.42 feet
-
-        self.loaded_data = Z
+            self.loaded_data = None
 
 
 # Interactive flood risk analysis map class
